@@ -3,6 +3,7 @@ import math
 from .game_point import Point
 from .game_grid import SpatialGrid
 from .game_wall import Wall
+from .game_checkpoint import Checkpoint
 
 
 class Car:
@@ -25,7 +26,7 @@ class Car:
 
         # Image handling
         self.original_image = pygame.image.load(
-            "./game/assets/car.png").convert_alpha()
+            "./game/assets/car.png")
         self.original_image = pygame.transform.flip(
             self.original_image, True, False)
         self.image = pygame.transform.rotate(
@@ -222,6 +223,30 @@ class Car:
     def __check_line_intersection(self, p1: Point, p2: Point, wall: Wall):
         x1, y1 = wall.x1, wall.y1
         x2, y2 = wall.x2, wall.y2
+        x3, y3 = p1.x, p1.y
+        x4, y4 = p2.x, p2.y
+
+        den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+        if den == 0:
+            return False
+
+        t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / den
+        u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / den
+
+        return 0 <= t <= 1 and 0 <= u <= 1
+
+    def check_checkpoint_collision(self, checkpoint: Checkpoint):
+        if not hasattr(self, 'prev_front_center'):
+            return False
+
+        line_start = self.prev_front_center
+        line_end = self.front_center
+
+        return self._check_checkpoint_intersection(line_start, line_end, checkpoint)
+
+    def _check_checkpoint_intersection(self, p1: Point, p2: Point, checkpoint: Checkpoint):
+        x1, y1 = checkpoint.x1, checkpoint.y1
+        x2, y2 = checkpoint.x2, checkpoint.y2
         x3, y3 = p1.x, p1.y
         x4, y4 = p2.x, p2.y
 
