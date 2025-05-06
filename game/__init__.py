@@ -1,5 +1,6 @@
 from .game_track import Track
 from .game_car import Car
+from .game_point import Point
 import pygame
 
 
@@ -20,6 +21,11 @@ class Game:
 
         self.car = Car(*self.track.starting_position,
                        self.track.starting_rotation)
+
+        self.current_checkpoint_index = 0
+        self.score = 0
+        self.checkpoints = self.track.checkpoints
+        self.checkpoints[0].is_active = True  # Activate first checkpoint
 
     def handle_events(self):
         for event in pygame.event.get():
@@ -46,8 +52,17 @@ class Game:
             self.handle_events()
             self.handle_input()
 
+            self.car.prev_front_center = Point(
+                self.car.front_center.x, self.car.front_center.y)
+
             # Update car physics
             self.car.update()
+
+            # Check checkpoint collision
+            current_checkpoint = self.checkpoints[self.current_checkpoint_index]
+            if current_checkpoint.is_active:
+                if self.car.check_checkpoint_collision(current_checkpoint):
+                    self._handle_checkpoint_passed()
 
             if self.car.check_collisions(self.track.walls_grid):
                 self.handle_collision()
@@ -60,17 +75,28 @@ class Game:
 
         pygame.quit()
 
+    def _handle_checkpoint_passed(self):
+        # Update score and checkpoint state
+        self.score += 100
+        self.checkpoints[self.current_checkpoint_index].is_active = False
+        self.checkpoints[self.current_checkpoint_index].is_passed = True
+
+        # Activate next checkpoint
+        self.current_checkpoint_index = (
+            self.current_checkpoint_index + 1) % len(self.checkpoints)
+        self.checkpoints[self.current_checkpoint_index].is_active = True
+
     def handle_collision(self):
         """Handle collision consequences"""
-        print("Collision detected!")
-        # Implement your collision response:
-        # - Reset position
-        # - Apply penalty
-        # - End episode
-        # self.car.vel = 0  # Immediate stop
-        # self.car.vel *= -0.5  # Bounce effect
-
         self.screen_flash()
+
+        for checkpoint in self.checkpoints:
+            checkpoint.is_active = False
+            checkpoint.is_passed = False
+
+        self.checkpoints[0].is_active = True
+        self.current_checkpoint_index = 0
+        self.score = 0
         self.car = Car(*self.track.starting_position,
                        self.track.starting_rotation)
 
@@ -80,10 +106,14 @@ class Game:
         flash.fill((255, 255, 255))
         self.surface.blit(flash, (0, 0))
         pygame.display.flip()
-        pygame.time.delay(10)  # 100ms flash
+        pygame.time.delay(10)  # 10ms flash
 
     def render(self):
         self.surface.fill("black")
+
+        font = pygame.font.Font(None, 36)
+        text = font.render(f'Score: {self.score}', True, (255, 255, 255))
+        self.surface.blit(text, (10, 10))
 
         self.track.render()
 
