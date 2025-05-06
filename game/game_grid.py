@@ -50,6 +50,25 @@ class SpatialGrid:
         cells.append(self.__get_cell(x, y))
         return list(set(cells))  # Remove duplicates
 
+    def __get_current_cell(self, x, y):
+        x_cell, y_cell = int(x // self.cell_size), int(y // self.cell_size)
+        return x_cell, y_cell
+
+    def get_nearby_cell_wall(self, x, y):
+        x_cell, y_cell = self.__get_current_cell(x, y)
+
+        nearby_cells = [
+            (x_cell-1, y_cell-1), (x_cell, y_cell-1), (x_cell+1, y_cell-1),
+            (x_cell-1, y_cell),   (x_cell, y_cell),   (x_cell+1, y_cell),
+            (x_cell-1, y_cell+1), (x_cell, y_cell+1), (x_cell+1, y_cell+1)
+        ]
+
+        wall = []
+        for cell in nearby_cells:
+            if cell in self.grid:
+                wall.extend(self.grid[cell])
+        return wall
+
     def draw(self, surface, color=(50, 50, 50)):
         for cell in self.grid:
             x = cell[0] * self.cell_size
