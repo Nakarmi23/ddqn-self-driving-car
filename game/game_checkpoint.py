@@ -9,6 +9,9 @@ class Checkpoint:
         self.y2 = y2
         self.isStart = isStart
 
+        self.is_active = False  # Add activation state
+        self.is_passed = False  # Track completion
+
     def __getStartCords(self):
         return (self.x1, self.y1)
 
@@ -22,7 +25,7 @@ class Checkpoint:
             inactive_color=(100, 100, 100),
             thickness=2
     ):
-        color = start_line_color if self.isStart else inactive_color
+        color = start_line_color if self.is_active else inactive_color
         pygame.draw.line(
             surface,
             color,
