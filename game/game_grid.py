@@ -12,7 +12,7 @@ class SpatialGrid:
 
     def add_wall(self, wall: Wall):
         # Simple approach: add wall to all cells along its length
-        cells = self.__get_cells_along_wall_line(
+        cells = self.get_cells_along_wall_line(
             wall.x1, wall.y1, wall.x2, wall.y2)
 
         for cell in cells:
@@ -20,7 +20,7 @@ class SpatialGrid:
                 self.grid[cell] = []
             self.grid[cell].append(wall)
 
-    def __get_cells_along_wall_line(self, x1, y1, x2, y2):
+    def get_cells_along_wall_line(self, x1, y1, x2, y2):
         """Bresenham's line algorithm to get all cells a line passes through"""
         cells = []
         dx = abs(x2 - x1)
@@ -47,6 +47,7 @@ class SpatialGrid:
                     x += sx
                     err += dy
                 y += sy
+
         cells.append(self.__get_cell(x, y))
         return list(set(cells))  # Remove duplicates
 
