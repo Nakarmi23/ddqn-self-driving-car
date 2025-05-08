@@ -58,7 +58,7 @@ __all_walls = (
 
 __all_checkpoints = (
     # Starting line (special properties)
-    Checkpoint(0, 200, 120, 200, base_reward=200, difficulty_factor=0.8),
+    Checkpoint(0, 200, 130, 200, base_reward=200, difficulty_factor=0.8),
 
     # Straight sections (easier)
     Checkpoint(0, 100, 120, 150, base_reward=150, difficulty_factor=0.7),

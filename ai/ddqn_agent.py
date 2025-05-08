@@ -11,14 +11,14 @@ class DDQNAgent:
 
         self.gamma = 0.99
         self.epsilon = 1.0
-        self.epsilon_min = 0.01
-        self.epsilon_decay = 0.9995
+        self.epsilon_min = 0.05
+        self.epsilon_decay = 0.995
 
         self.batch_size = 128
         self.update_target_every = 1000
         self.step_count = 0
 
-        self.optimizer = tf.keras.optimizers.Adam(learning_rate=0.00025)
+        self.optimizer = tf.keras.optimizers.Adam(learning_rate=5e-5)
         self.online_net = self._build_network()
         self.target_net = self._build_network()
 
@@ -28,15 +28,13 @@ class DDQNAgent:
         model = tf.keras.Sequential([
             tf.keras.layers.Input(shape=(self.state_size,)),
             tf.keras.layers.Dense(256, activation='relu'),
-            tf.keras.layers.LayerNormalization(),
-            tf.keras.layers.Dense(256, activation='relu'),
-            tf.keras.layers.LayerNormalization(),
+            # tf.keras.layers.Dense(64, activation='relu'),
             tf.keras.layers.Dense(self.action_size, activation='linear')
         ])
         model.compile(loss=tf.keras.losses.Huber(), optimizer=self.optimizer)
         return model
 
-    def _update_target_network(self, hard_copy=False, tau=0.005):
+    def _update_target_network(self, hard_copy=False, tau=0.01):
         if hard_copy:
             self.target_net.set_weights(self.online_net.get_weights())
         else:
@@ -97,8 +95,8 @@ class DDQNAgent:
         print(f"[Step {self.step_count}] Loss: {loss.numpy():.4f}, Epsilon: {self.epsilon:.4f}")
 
     def save_model(self, path):
-        self.online_net.save_weights(path)
+        self.online_net.save(path)
 
     def load_model(self, path):
-        self.online_net.load_weights(path)
+        self.online_net = tf.keras.models.load_model(path)
         self._update_target_network(hard_copy=True)

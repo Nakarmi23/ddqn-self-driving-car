@@ -21,7 +21,7 @@ class Car:
         self.dvel = 0.2
         self.angle = math.radians(rotation)  # Physics angle in radians
         self.soll_angle = self.angle
-        
+
         self.checkpoints = track.checkpoints
         self.walls = track.walls
         # Grid properties
@@ -55,7 +55,7 @@ class Car:
         self.closest_ray_distances = []
 
         # Hitbox points (will be calculated in _update_hitbox_points)
-        self.font_right = None  # Front-left
+        self.front_right = None  # Front-left
         self.back_right = None  # Front-right
         self.back_left = None  # Rear-right
         self.front_left = None  # Rear-left
@@ -69,7 +69,7 @@ class Car:
 
     def get_state(self):
         normalized_ray_distances = [
-            d / self.ray_length for d in self.closest_ray_distances]
+            d / l for d, l in self.closest_ray_distances]
 
         normalized_vel = self.vel / self.max_vel
 
@@ -103,24 +103,24 @@ class Car:
 
         # Rotate points using visual angle (physics angle - 90°)
         visual_angle = self.angle - math.pi/2
-        self.font_right = self._rotate_point(base_pt1, visual_angle)
+        self.front_right = self._rotate_point(base_pt1, visual_angle)
         self.back_right = self._rotate_point(base_pt2, visual_angle)
         self.back_left = self._rotate_point(base_pt3, visual_angle)
         self.front_left = self._rotate_point(base_pt4, visual_angle)
 
         # Convert to world coordinates
-        for p in [self.font_right, self.back_right, self.back_left, self.front_left]:
+        for p in [self.front_right, self.back_right, self.back_left, self.front_left]:
             p.x += self.x
             p.y += self.y
 
         # Calculate strategic points
         self.right_center = Point(
-            (self.font_right.x + self.back_right.x)/2,
-            (self.font_right.y + self.back_right.y)/2
+            (self.front_right.x + self.back_right.x)/2,
+            (self.front_right.y + self.back_right.y)/2
         )
         self.front = Point(
-            (self.font_right.x + self.front_left.x)/2,
-            (self.font_right.y + self.front_left.y)/2
+            (self.front_right.x + self.front_left.x)/2,
+            (self.front_right.y + self.front_left.y)/2
         )
         self.back = Point(
             (self.back_right.x + self.back_left.x)/2,
@@ -141,25 +141,26 @@ class Car:
         """Cast rays from precise hitbox points with visual alignment"""
         ray_definition = [
             (self.right_center, 0, self.ray_length),
-            (self.font_right, -30, self.ray_length),
-            (self.back_right, 30, self.ray_length),
-            (self.front, -120, 130),
-            (self.front, -110, 160),
-            (self.front, -90, 250),
-            (self.front, -70, 160),
-            (self.front, -50, 130),
-            (self.back, 90,self.ray_length),
-            (self.back_left, 135,self.ray_length),
-            (self.front_left, -135,self.ray_length),
-            (self.left_center, 180,self.ray_length)
+            (self.front_right, -30, self.ray_length),
+            (self.back_right, 30, 30),
+            # (self.front, -120, 130),
+            # (self.front, -110, 160),
+            (self.front, -90, self.ray_length),
+            # (self.front, -70, 160),
+            # (self.front, -50, 130),
+            # (self.back, 90, 40),
+            (self.back_left, 135, 30),
+            (self.front_left, -135, self.ray_length),
+            (self.left_center, 180, self.ray_length)
         ]
 
         self.closest_rays = []
         self.closest_ray_distances = []
 
         for origin, angle_offset, length in ray_definition:
-            end_point, distance = self._calculate_ray_end(origin, angle_offset, length)
-            self.closest_ray_distances.append(distance)
+            end_point, distance = self._calculate_ray_end(
+                origin, angle_offset, length)
+            self.closest_ray_distances.append((distance, length))
 
             self.closest_rays.append(
                 (origin.x, origin.y, end_point.x, end_point.y))
@@ -281,10 +282,10 @@ class Car:
 
     def __check_collision(self, wall: Wall):
         edge = [
-            (self.font_right, self.back_right),
+            (self.front_right, self.back_right),
             (self.back_right, self.back_left),
             (self.back_left, self.front_left),
-            (self.front_left, self.font_right)
+            (self.front_left, self.front_right)
         ]
 
         for line in edge:
@@ -309,13 +310,18 @@ class Car:
         return 0 <= t <= 1 and 0 <= u <= 1
 
     def check_checkpoint_collision(self, checkpoint: Checkpoint):
-        if not hasattr(self, 'prev_front_center'):
-            return False
+        edge = [
+            (self.front_right, self.back_right),
+            (self.back_right, self.back_left),
+            (self.back_left, self.front_left),
+            (self.front_left, self.front_right)
+        ]
 
-        line_start = self.prev_front_center
-        line_end = self.right_center
+        for line in edge:
+            if self._check_checkpoint_intersection(line[0], line[1], checkpoint):
+                return True
 
-        return self._check_checkpoint_intersection(line_start, line_end, checkpoint)
+        return False
 
     def _check_checkpoint_intersection(self, p1: Point, p2: Point, checkpoint: Checkpoint):
         x1, y1 = checkpoint.x1, checkpoint.y1
@@ -344,7 +350,7 @@ class Car:
             )
 
         # Draw hitbox points (red)
-        for p in [self.font_right, self.back_right, self.back_left, self.front_left,
+        for p in [self.front_right, self.back_right, self.back_left, self.front_left,
                   self.right_center, self.front,
                   self.back, self.left_center]:
             pygame.draw.circle(surface, (255, 0, 0), (int(p.x), int(p.y)), 3)
