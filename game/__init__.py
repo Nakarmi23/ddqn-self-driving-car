@@ -5,299 +5,248 @@ import pygame
 import math
 import numpy as np
 from ai.ddqn_agent import DDQNAgent
-
+import os
 
 class Game:
+    MIN_SAFE_DISTANCE = 20
+    COLLISION_PROXIMITY = 10
+    TIME_PENALTY = 0.01
+    VELOCITY_BONUS_FACTOR = 0.2
+    EDGE_PENALTY_FACTOR = 8
+    CRASH_PENALTY_BASE = 30
+    SAVE_EVERY = 10
+    MAX_EPISODES = 500
+    MAX_STEPS_PER_EPISODE = 3000
+    SAVE_PATH = "models/ddqn_agent.h5"
+    ACCELERATION_PRIORITIZATION_BONUS = 0.5
+    LEARN_EVERY = 30
+    SYMMETRY_REWARD_FACTOR = 0.2
+    ALIGNMENT_REWARD_FACTOR = 0.4
+
+    # Acceleration prioritization
+    ACCEL_ACTIONS = {1, 5, 6}       # Forward
+    DECEL_ACTIONS = {2, 7, 8}       # Reverse
+    NO_ACCEL_ACTIONS = {0}          # Idle or do nothing
+
     def __init__(self):
         pygame.init()
-
-        # Existing initialization
-
-        self.width = 1000
-        self.height = 600
-
+        self.width, self.height = 1000, 600
+        self.surface = pygame.display.set_mode((self.width, self.height))
+        self.clock = pygame.time.Clock()
         self.running = True
 
-        self.clock = pygame.time.Clock()
-
-        self.surface = pygame.display.set_mode((self.width, self.height))
-
         self.track = Track(self.surface)
+        self.car = Car(*self.track.starting_position, self.track, self.track.starting_rotation)
 
-        self.car = Car(*self.track.starting_position,
-                       self.track, self.track.starting_rotation)
+        self._reset_game_state()
+        self.agent = DDQNAgent(len(self.car.get_state()) + 1, 9)
+        os.makedirs(os.path.dirname(self.SAVE_PATH), exist_ok=True)
+        if os.path.exists(self.SAVE_PATH):
+            self.agent.load_model(self.SAVE_PATH)
+        else:
+            print(f"No saved model found at {self.SAVE_PATH}, starting fresh.")
+
+    def run(self):
+        for self.episode in range(1, self.MAX_EPISODES + 1):
+            state = self._get_state()
+            episode_reward = 0
+            steps = 0
+            self.running = True
+
+            while self.running and steps < self.MAX_STEPS_PER_EPISODE:
+                self.handle_events()
+                action = self.agent.choose_action(state)
+                self._apply_action(action)
+
+                self.car.prev_front_center = Point(self.car.right_center.x, self.car.right_center.y)
+                self.car.update()
+
+                current_checkpoint = self.checkpoints[self.current_checkpoint_index]
+                if current_checkpoint.is_active:
+                    if self.car.check_checkpoint_collision(current_checkpoint):
+                        self._handle_checkpoint_passed(current_checkpoint)
+
+                reward = self._compute_reward(state, action)
+                done = self.car.check_collisions(self.track.walls_grid)
+                if done:
+                    reward -= self.CRASH_PENALTY_BASE + abs(self.car.vel)
+                    self.handle_collision()
+
+                next_state = self._get_state()
+                self.agent.store_experience(state, action, reward, next_state, done)
+
+                self.agent.learn()
+
+                state = next_state
+                episode_reward += reward
+                steps += 1
+                self.total_steps += 1
+
+                self.render()
+                self.clock.tick(60)  # now time penalty used elsewhere
+
+            print(f"Episode {self.episode} | Total Reward: {episode_reward:.2f} | Steps: {steps}")
+            if self.episode % self.SAVE_EVERY == 0:
+                self.save_model()
+
+        pygame.quit()
+
+    def _reset_game_state(self):
+        self.car = Car(*self.track.starting_position, self.track, self.track.starting_rotation)
+        self.score = 0
+        self.current_checkpoint_index = 0
+        self.checkpoints = self.track.checkpoints
+        for cp in self.checkpoints:
+            cp.is_active = cp.is_passed = False
+        self.checkpoints[0].is_active = True
 
         self.consecutive_checkpoints = 0
         self.combo_multiplier = 1.0
         self.current_velocity = 0.0
-        self.max_combo = 1
         self.highest_speed = 0.0
-
-        self.current_checkpoint_index = 0
-        self.score = 0
-        self.checkpoints = self.track.checkpoints
-        self.checkpoints[0].is_active = True  # Activate first checkpoint
-
-        state_size = len(self.car.get_state())+1
-        action_size = 9  # Modify based on your action space
-        self.agent = DDQNAgent(state_size, action_size)
-        self.episode = 0
         self.total_steps = 0
+        self.max_combo = 1.0
 
-    def _calculate_reward(self, checkpoint):
-        # Normalize velocity (0-1 range based on car's max speed)
-        velocity_ratio = min(
-            1.0, abs(self.current_velocity) / self.car.max_vel)
-
-        # Difficulty curve (exponential reward for high speeds)
-        speed_bonus = 1.0 + (velocity_ratio ** 2)  # 1-2 range
-
-        # Combo system (increases with consecutive checkpoints)
-        combo_bonus = 1.0 + (self.consecutive_checkpoints * 0.15)
-
-        # Calculate final reward
-        reward = (
-            checkpoint.base_reward
-            * checkpoint.difficulty_factor
-            * speed_bonus
-            * combo_bonus
-            * self.combo_multiplier
-        )
-
-        return int(reward)
-
-    def _update_combo_multiplier(self):
-        # Combo grows with speed and consecutive checkpoints
-        speed_component = min(
-            2.0, 1.0 + (abs(self.current_velocity) / self.car.max_vel))
-        streak_component = 1.0 + (self.consecutive_checkpoints * 0.05)
-        self.combo_multiplier = min(3.0, speed_component * streak_component)
-        self.max_combo = max(self.max_combo, self.combo_multiplier)
+    def _get_state(self):
+        return np.array(self.car.get_state() + [self.current_checkpoint_index], dtype=np.float32)
 
     def handle_events(self):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
 
-    def handle_input(self):
-        keys = pygame.key.get_pressed()
+    def _compute_reward(self, state, action):
+        # Base reward: progress through checkpoints
+        reward = self.score / 100.0
 
-        # Acceleration controls
-        if keys[pygame.K_UP]:
-            self.car.accelerate(1)  # Forward
-        if keys[pygame.K_DOWN]:
-            self.car.accelerate(-1)  # Reverse
+        # Example: use mid-left and mid-right ray distances
+        left = self.car.closest_ray_distances[0]  # Adjust index to match cast_rays()
+        right = self.car.closest_ray_distances[-1]
 
-        # Steering controls
-        if keys[pygame.K_LEFT]:
-            self.car.turn(-1)  # Left
-        if keys[pygame.K_RIGHT]:
-            self.car.turn(1)   # Right
+        # Symmetry reward (max at center)
+        symmetry = 1 - abs(left - right) / self.car.ray_length
+        reward += symmetry * self.SYMMETRY_REWARD_FACTOR
 
-    def run(self):
-        state = np.array(self.car.get_state() +
-                         [self.current_checkpoint_index], dtype=np.float32)
-        while self.running:
+        if action in self.ACCEL_ACTIONS:
+            reward += self.ACCELERATION_PRIORITIZATION_BONUS
+        elif action in self.DECEL_ACTIONS or action in self.NO_ACCEL_ACTIONS:
+            reward -= self.ACCELERATION_PRIORITIZATION_BONUS * 0.5  # Mild penalty for non-acceleration
 
-            self.handle_events()
-            action = self.agent.choose_action(state)
-            self._apply_action(action)
+        # # Smooth driving: penalize steering changes
+        # prev_angle = self.car.prev_angle if hasattr(self.car, 'prev_angle') else self.car.angle
+        # angle_diff = abs(self.car.soll_angle - prev_angle)
+        # reward -= angle_diff * 0.01
+        # self.car.prev_angle = self.car.angle
 
-            self.car.prev_front_center = Point(
-                self.car.front_center.x, self.car.front_center.y)
+        # Time penalty
+        reward -= self.TIME_PENALTY
 
-            # Update car physics
-            self.car.update()
+        # Velocity bonus
+        vel_ratio = abs(self.car.vel) / self.car.max_vel
+        reward += vel_ratio * self.VELOCITY_BONUS_FACTOR
 
-            # Check checkpoint collision
-            current_checkpoint = self.checkpoints[self.current_checkpoint_index]
-            if current_checkpoint.is_active:
-                if self.car.check_checkpoint_collision(current_checkpoint):
-                    self._handle_checkpoint_passed()
-            has_collision = self.car.check_collisions(self.track.walls_grid)
-            if has_collision:
-                self.handle_collision()
+        # Proximity penalty: smooth based
+        min_dist = min(self.car.closest_ray_distances)
+        if min_dist < self.MIN_SAFE_DISTANCE:
+            reward -= (self.MIN_SAFE_DISTANCE - min_dist) * self.EDGE_PENALTY_FACTOR
 
-            # Render everything
-            self.render()
+        # Progress reward: inversely proportional to distance (non-linear scaling)
+        next_cp = self.checkpoints[self.current_checkpoint_index]
+        car_pos = np.array([self.car.x, self.car.y])
+        cp_center = np.array([(next_cp.x1 + next_cp.x2) / 2, (next_cp.y1 + next_cp.y2) / 2])
 
-            reward = self.score / 100.0
+        dist = np.linalg.norm(car_pos - cp_center)
+        normalized_dist = dist / np.hypot(self.width, self.height)
 
-            next_state = np.array(self.car.get_state(
-            ) + [self.current_checkpoint_index], dtype=np.float32)
-            self.agent.store_experience(
-                state, action, reward, next_state, not self.running)
-            self.agent.learn()
+        # Nonlinear shaping: steeper reward near the checkpoint
+        progress_reward = (1 - normalized_dist) ** 2 * 2.0  # Max ~2.0 near checkpoint, drops off faster
+        reward += progress_reward
+        
+        # Steering smoothness
+        alignment = math.cos(self.car.soll_angle - self.car.angle)
+        reward += alignment * 0.5
 
-            state = next_state
-            self.total_steps += 1
-            print(self.total_steps)
-            # Maintain 60 FPS
-            self.clock.tick(60)
-
-        pygame.quit()
-
-    def _handle_checkpoint_passed(self):
-
-        current = self.checkpoints[self.current_checkpoint_index]
-
-        # Store velocity at moment of passing
-        self.current_velocity = self.car.vel
-        self.highest_speed = max(
-            self.highest_speed, abs(self.current_velocity))
-
-        # Calculate and award reward
-        reward = self._calculate_reward(current)
-        self.score += reward
-
-        # Update streak
-        self.consecutive_checkpoints += 1
-
-        # Visual feedback
-        self._show_speed_bonus(current, reward)
-        self._update_combo_multiplier()
-
-        # Progress to next checkpoint
-        current.is_active = False
-        current.is_passed = True
-        self.current_checkpoint_index = (
-            self.current_checkpoint_index + 1) % len(self.checkpoints)
-        self.checkpoints[self.current_checkpoint_index].is_active = True
-
-    def handle_collision(self):
-        """Handle collision consequences"""
-        self.screen_flash()
-
-        speed_penalty = int(abs(self.car.vel)) * 2
-        streak_penalty = self.consecutive_checkpoints * 10
-        combo_penalty = int(self.combo_multiplier * 50)
-
-        total_penalty = speed_penalty + streak_penalty + combo_penalty
-        self.score = max(0, self.score - total_penalty)
-
-        # Reset counters
-        self.consecutive_checkpoints = 0
-        self.combo_multiplier = 1.0
-
-        for checkpoint in self.checkpoints:
-            checkpoint.is_active = False
-            checkpoint.is_passed = False
-
-        self.checkpoints[0].is_active = True
-        self.current_checkpoint_index = 0
-        self.score = 0
-
-        self.car = Car(*self.track.starting_position,
-                       self.track, self.track.starting_rotation)
-
-    def screen_flash(self):
-        """Visual feedback for collision"""
-        flash = pygame.Surface((self.width, self.height))
-        flash.fill((255, 255, 255))
-        self.surface.blit(flash, (0, 0))
-        pygame.display.flip()
-        pygame.time.delay(10)  # 10ms flash
-
-    def _show_speed_bonus(self, checkpoint, reward):
-        # Speed indicator colors
-        speed_ratio = abs(self.current_velocity) / self.car.max_vel
-        color = (
-            int(255 * speed_ratio),
-            int(255 * (1 - speed_ratio)),
-            0
-        )
-
-        # Reward text
-        font = pygame.font.Font(None, 28)
-        texts = [
-            f"+{reward}",
-            f"Speed: {abs(self.current_velocity):.1f} px/s",
-            f"Combo: x{self.combo_multiplier:.1f}"
-        ]
-
-        # Position above checkpoint
-        cx = (checkpoint.x1 + checkpoint.x2) // 2
-        cy = (checkpoint.y1 + checkpoint.y2) // 2
-
-        for i, text in enumerate(texts):
-            text_surface = font.render(
-                text, True, color if i == 0 else (200, 200, 200))
-            self.surface.blit(text_surface, (cx - 50, cy - 30 - i*20))
-
-    def render(self):
-        self.surface.fill("black")
-
-        font = pygame.font.Font(None, 36)
-        text = font.render(f'Score: {self.score}', True, (255, 255, 255))
-        self.surface.blit(text, (10, 10))
-
-        self.track.render()
-
-        self.car.draw(self.surface)
-
-        # Speed gauge
-        self._draw_speedometer()
-
-        # Combo display
-        self._draw_combo_meter()
-
-        pygame.display.flip()
-
-    def _draw_speedometer(self):
-        speed = abs(self.car.vel)
-        max_speed = self.car.max_vel
-        ratio = speed / max_speed
-
-        # Draw circular gauge
-        center = (self.width - 80, self.height - 80)
-        radius = 30
-        pygame.draw.circle(self.surface, (50, 50, 50), center, radius, 3)
-        pygame.draw.arc(self.surface, (0, 255, 0),
-                        (center[0]-radius, center[1] -
-                         radius, radius*2, radius*2),
-                        -math.pi/2, -math.pi/2 + 2*math.pi*ratio, 5)
-
-        # Speed text
-        font = pygame.font.Font(None, 24)
-        text = font.render(f"{speed:.1f}", True, (255, 255, 255))
-        self.surface.blit(text, (center[0]-15, center[1]-10))
-
-    def _draw_combo_meter(self):
-        # Combo bar
-        combo_ratio = self.combo_multiplier / 3.0
-        pygame.draw.rect(self.surface, (50, 50, 50),
-                         (20, self.height-40, 200, 20))
-        pygame.draw.rect(self.surface, (255, 215, 0),
-                         (20, self.height-40, 200 * combo_ratio, 20))
-
-        # Combo text
-        font = pygame.font.Font(None, 24)
-        text = font.render(
-            f"COMBO x{self.combo_multiplier:.1f}", True, (255, 255, 255))
-        self.surface.blit(text, (20, self.height-60))
+        return reward
 
     def _apply_action(self, action):
-        """Map action index to car controls"""
-        # Example mapping:
-        if action == 0:  # Coast
-            pass
-        elif action == 1:  # Accelerate
-            self.car.accelerate(1)
-        elif action == 2:  # Brake
-            self.car.accelerate(-1)
-        elif action == 3:  # Left
-            self.car.turn(-1)
-        elif action == 4:  # Right
-            self.car.turn(1)
-        elif action == 5:  # Accelerate and left
-            self.car.accelerate(1)
-            self.car.turn(-1)
-        elif action == 6:  # Accelerate and right
-            self.car.accelerate(1)
-            self.car.turn(1)
-        elif action == 7:  # Brake and left
-            self.car.accelerate(-1)
-            self.car.turn(-1)
-        elif action == 8:  # Brake and right
-            self.car.accelerate(-1)
-            self.car.turn(1)
+        mapping = {
+            1: (self.car.accelerate, 1),
+            2: (self.car.accelerate, -1),
+            3: (self.car.turn, -1),
+            4: (self.car.turn, 1),
+            5: ((self.car.accelerate, self.car.turn), (1, -1)),
+            6: ((self.car.accelerate, self.car.turn), (1, 1)),
+            7: ((self.car.accelerate, self.car.turn), (-1, -1)),
+            8: ((self.car.accelerate, self.car.turn), (-1, 1)),
+        }
+        if action in mapping:
+            funcs, args = mapping[action]
+            if isinstance(funcs, tuple):
+                for f, a in zip(funcs, args): f(a)
+            else:
+                funcs(args)
+
+    def _handle_checkpoint_passed(self, checkpoint):
+        self.current_velocity = self.car.vel
+        self.highest_speed = max(self.highest_speed, abs(self.current_velocity))
+
+        cp_reward = self._calculate_checkpoint_reward(checkpoint)
+        self.score += cp_reward
+        self.consecutive_checkpoints += 1
+        self._update_combo_multiplier()
+
+        checkpoint.is_active = False
+        checkpoint.is_passed = True
+        self.current_checkpoint_index = (self.current_checkpoint_index + 1) % len(self.checkpoints)
+        self.checkpoints[self.current_checkpoint_index].is_active = True
+
+    def _calculate_checkpoint_reward(self, checkpoint):
+        vel_ratio = min(1.0, abs(self.current_velocity) / self.car.max_vel)
+        speed_bonus = 1.0 + vel_ratio**2
+        combo_bonus = 1.0 + (self.consecutive_checkpoints * 0.15)
+        return checkpoint.base_reward * checkpoint.difficulty_factor * speed_bonus * combo_bonus * self.combo_multiplier
+
+    def _update_combo_multiplier(self):
+        speed_factor = min(2.0, 1.0 + abs(self.car.vel)/self.car.max_vel)
+        streak_factor = 1.0 + (self.consecutive_checkpoints * 0.05)
+        self.combo_multiplier = min(3.0, speed_factor * streak_factor)
+        self.max_combo = max(self.max_combo, self.combo_multiplier)
+
+    def handle_collision(self):
+        self.screen_flash()
+        self._reset_game_state()
+
+    def screen_flash(self):
+        flash = pygame.Surface((self.width, self.height))
+        flash.fill((255,255,255)); self.surface.blit(flash,(0,0)); pygame.display.flip(); pygame.time.delay(10)
+
+    def render(self):
+        self.surface.fill('black')
+        self._draw_text(f"Score: {self.score}", (10,10), 36)
+        self.track.render()
+        self.car.draw(self.surface)
+        self._draw_speedometer()
+        self._draw_combo_meter()
+        pygame.display.flip()
+
+    def save_model(self):
+        self.agent.save_model(self.SAVE_PATH)
+        print(f"Model saved at episode {self.episode} -> {self.SAVE_PATH}")
+
+    def _draw_text(self, text, pos, size, color=(255,255,255)):
+        font=pygame.font.Font(None,size)
+        surf=font.render(text,True,color)
+        self.surface.blit(surf,pos)
+
+    def _draw_speedometer(self):
+        speed=abs(self.car.vel); ratio=speed/self.car.max_vel
+        c=(self.width-80,self.height-80); r=30
+        pygame.draw.circle(self.surface,(50,50,50),c,r,3)
+        pygame.draw.arc(self.surface,(0,255,0),(c[0]-r,c[1]-r,r*2,r*2),-math.pi/2,-math.pi/2+2*math.pi*ratio,5)
+        self._draw_text(f"{speed:.1f}",(c[0]-15,c[1]-10),24)
+
+    def _draw_combo_meter(self):
+        ratio=self.combo_multiplier/3.0
+        pygame.draw.rect(self.surface,(50,50,50),(20,self.height-40,200,20))
+        pygame.draw.rect(self.surface,(255,215,0),(20,self.height-40,200*ratio,20))
+        self._draw_text(f"COMBO x{self.combo_multiplier:.1f}",(20,self.height-60),24)

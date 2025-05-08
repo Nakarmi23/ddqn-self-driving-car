@@ -50,19 +50,19 @@ class Car:
         self.rect = self.image.get_rect(center=(self.x, self.y))
 
         # Ray casting system
-        self.ray_length = 170
+        self.ray_length = 100
         self.closest_rays = []
         self.closest_ray_distances = []
 
         # Hitbox points (will be calculated in _update_hitbox_points)
-        self.pt1 = None  # Front-left
-        self.pt2 = None  # Front-right
-        self.pt3 = None  # Rear-right
-        self.pt4 = None  # Rear-left
-        self.front_center = None
-        self.mid_left = None
-        self.mid_right = None
-        self.back_center = None
+        self.font_right = None  # Front-left
+        self.back_right = None  # Front-right
+        self.back_left = None  # Rear-right
+        self.front_left = None  # Rear-left
+        self.right_center = None
+        self.front = None
+        self.back = None
+        self.left_center = None
 
         self._update_hitbox_points()
         self.cast_rays()
@@ -103,32 +103,32 @@ class Car:
 
         # Rotate points using visual angle (physics angle - 90°)
         visual_angle = self.angle - math.pi/2
-        self.pt1 = self._rotate_point(base_pt1, visual_angle)
-        self.pt2 = self._rotate_point(base_pt2, visual_angle)
-        self.pt3 = self._rotate_point(base_pt3, visual_angle)
-        self.pt4 = self._rotate_point(base_pt4, visual_angle)
+        self.font_right = self._rotate_point(base_pt1, visual_angle)
+        self.back_right = self._rotate_point(base_pt2, visual_angle)
+        self.back_left = self._rotate_point(base_pt3, visual_angle)
+        self.front_left = self._rotate_point(base_pt4, visual_angle)
 
         # Convert to world coordinates
-        for p in [self.pt1, self.pt2, self.pt3, self.pt4]:
+        for p in [self.font_right, self.back_right, self.back_left, self.front_left]:
             p.x += self.x
             p.y += self.y
 
         # Calculate strategic points
-        self.front_center = Point(
-            (self.pt1.x + self.pt2.x)/2,
-            (self.pt1.y + self.pt2.y)/2
+        self.right_center = Point(
+            (self.font_right.x + self.back_right.x)/2,
+            (self.font_right.y + self.back_right.y)/2
         )
-        self.mid_left = Point(
-            (self.pt1.x + self.pt4.x)/2,
-            (self.pt1.y + self.pt4.y)/2
+        self.front = Point(
+            (self.font_right.x + self.front_left.x)/2,
+            (self.font_right.y + self.front_left.y)/2
         )
-        self.mid_right = Point(
-            (self.pt2.x + self.pt3.x)/2,
-            (self.pt2.y + self.pt3.y)/2
+        self.back = Point(
+            (self.back_right.x + self.back_left.x)/2,
+            (self.back_right.y + self.back_left.y)/2
         )
-        self.back_center = Point(
-            (self.pt3.x + self.pt4.x)/2,
-            (self.pt3.y + self.pt4.y)/2
+        self.left_center = Point(
+            (self.back_left.x + self.front_left.x)/2,
+            (self.back_left.y + self.front_left.y)/2
         )
 
     def _rotate_point(self, point, angle):
@@ -140,35 +140,39 @@ class Car:
     def cast_rays(self):
         """Cast rays from precise hitbox points with visual alignment"""
         ray_definition = [
-            (self.front_center, 0),
-            (self.pt1, -30),
-            (self.pt2, 30),
-            (self.mid_left, -90),
-            (self.mid_right, 90),
-            (self.pt3, 135),
-            (self.pt4, -135),
-            (self.back_center, 180)
+            (self.right_center, 0, self.ray_length),
+            (self.font_right, -30, self.ray_length),
+            (self.back_right, 30, self.ray_length),
+            (self.front, -120, 130),
+            (self.front, -110, 160),
+            (self.front, -90, 250),
+            (self.front, -70, 160),
+            (self.front, -50, 130),
+            (self.back, 90,self.ray_length),
+            (self.back_left, 135,self.ray_length),
+            (self.front_left, -135,self.ray_length),
+            (self.left_center, 180,self.ray_length)
         ]
 
         self.closest_rays = []
         self.closest_ray_distances = []
 
-        for origin, angle_offset in ray_definition:
-            end_point, distance = self._calculate_ray_end(origin, angle_offset)
+        for origin, angle_offset, length in ray_definition:
+            end_point, distance = self._calculate_ray_end(origin, angle_offset, length)
             self.closest_ray_distances.append(distance)
 
             self.closest_rays.append(
                 (origin.x, origin.y, end_point.x, end_point.y))
 
-    def _calculate_ray_end(self, origin, angle_offset):
+    def _calculate_ray_end(self, origin, angle_offset, length):
         """Calculate ray end point with visual angle compensation"""
         visual_angle = self.angle - math.pi/2
         ray_angle = visual_angle + math.radians(angle_offset)
-        dx = math.sin(ray_angle) * self.ray_length
+        dx = math.sin(ray_angle) * length
         # Negative for pygame's Y axis
-        dy = -math.cos(ray_angle) * self.ray_length
+        dy = -math.cos(ray_angle) * length
         collision_point = Point(origin.x + dx, origin.y + dy)
-        closest_distance = self.ray_length
+        closest_distance = length
 
         for wall in self.walls:
             intersect = self._ray_wall_intersection(
@@ -277,10 +281,10 @@ class Car:
 
     def __check_collision(self, wall: Wall):
         edge = [
-            (self.pt1, self.pt2),
-            (self.pt2, self.pt3),
-            (self.pt3, self.pt4),
-            (self.pt4, self.pt1)
+            (self.font_right, self.back_right),
+            (self.back_right, self.back_left),
+            (self.back_left, self.front_left),
+            (self.front_left, self.font_right)
         ]
 
         for line in edge:
@@ -309,7 +313,7 @@ class Car:
             return False
 
         line_start = self.prev_front_center
-        line_end = self.front_center
+        line_end = self.right_center
 
         return self._check_checkpoint_intersection(line_start, line_end, checkpoint)
 
@@ -340,7 +344,7 @@ class Car:
             )
 
         # Draw hitbox points (red)
-        for p in [self.pt1, self.pt2, self.pt3, self.pt4,
-                  self.front_center, self.mid_left,
-                  self.mid_right, self.back_center]:
+        for p in [self.font_right, self.back_right, self.back_left, self.front_left,
+                  self.right_center, self.front,
+                  self.back, self.left_center]:
             pygame.draw.circle(surface, (255, 0, 0), (int(p.x), int(p.y)), 3)
