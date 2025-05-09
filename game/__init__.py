@@ -9,26 +9,15 @@ import os
 
 
 class Game:
-    MIN_SAFE_DISTANCE = 20
-    COLLISION_PROXIMITY = 10
-    TIME_PENALTY = 0.01
-    VELOCITY_BONUS_FACTOR = 0.2
-    EDGE_PENALTY_FACTOR = 0.5
     CRASH_PENALTY_BASE = 30
     SAVE_EVERY = 10
-    MAX_EPISODES = 500
+    MAX_EPISODES = 1000
     MAX_STEPS_PER_EPISODE = 3000
-    SAVE_PATH = "models/ddqn_agent.keras"
-    ACCELERATION_PRIORITIZATION_BONUS = 0.5
-    LEARN_EVERY = 30
-    SYMMETRY_REWARD_FACTOR = 0.2
-    ALIGNMENT_REWARD_FACTOR = 0.4
-    LOW_VELOCITY_PENALTY_FACTOR = 0.1
-
-    # Acceleration prioritization
-    ACCEL_ACTIONS = {1, 5, 6}       # Forward
-    DECEL_ACTIONS = {2, 7, 8}       # Reverse
-    NO_ACCEL_ACTIONS = {0}          # Idle or do nothing
+    ORGINAL_SAVE_PATH = "models/ddqn_agent_original.keras"
+    TARGET_SAVE_PATH = "models/ddqn_agent_target.keras"
+    EPSILON_SAVE_PATH = "models/ddqn_agent_epsilon.npy"
+    EPISODES_SAVE_PATH = "models/ddqn_agent_episodes.npy"
+    MEMORY_SAVE_PATH = "models/ddqn_agent_memory.pickle"
 
     def __init__(self):
         pygame.init()
@@ -37,21 +26,20 @@ class Game:
         self.clock = pygame.time.Clock()
         self.running = True
         self.steps_since_checkpoint = 0
+        self.prev_checkpoint_dist = None
+        self.episode = 0
 
         self.track = Track(self.surface)
         self.car = Car(*self.track.starting_position,
                        self.track, self.track.starting_rotation)
 
         self._reset_game_state()
-        self.agent = DDQNAgent(len(self.car.get_state()) + 2, 8)
-        os.makedirs(os.path.dirname(self.SAVE_PATH), exist_ok=True)
-        if os.path.exists(self.SAVE_PATH):
-            self.agent.load_model(self.SAVE_PATH)
-        else:
-            print(f"No saved model found at {self.SAVE_PATH}, starting fresh.")
+        self.agent = DDQNAgent(len(self.car.get_state()) + 2, 9)
+
+        self.load_model()
 
     def run(self):
-        for self.episode in range(1, self.MAX_EPISODES + 1):
+        while True:
             state = self._get_state()
             episode_reward = 0
             steps = 0
@@ -75,32 +63,57 @@ class Game:
                 else:
                     self.steps_since_checkpoint += 1
 
+                car_pos = self.car.front
+                dist_to_cp = current_checkpoint.distance_to(
+                    car_pos.x, car_pos.y)
+
+                if self.prev_checkpoint_dist is None:
+                    self.prev_checkpoint_dist = dist_to_cp
+
+                progess_reward = self.prev_checkpoint_dist - dist_to_cp
+                self.prev_checkpoint_dist = dist_to_cp
+
+                progess_reward = max(min(progess_reward, 1.0), -1.0)
+
                 reward = self._compute_reward(state, action)
-                done = self.car.check_collisions(self.track.walls_grid)
-                if done or self.steps_since_checkpoint > 250:
-                    reward -= self.CRASH_PENALTY_BASE + abs(self.car.vel)
-                    self.steps_since_checkpoint = 0
-                    done = True
-                    self.handle_collision()
+
+                reward += progess_reward
+
+                if has_passed:
+                    reward += 100
 
                 next_state = self._get_state()
+                done = self.car.check_collisions(self.track.walls_grid)
+
+                episode_reward += reward
+
+                if done or self.steps_since_checkpoint == 1000:
+                    reward -= self.CRASH_PENALTY_BASE + abs(self.car.vel)
+                    self.running = False
+                    self.steps_since_checkpoint = 0
+
                 self.agent.store_experience(
                     state, action, reward, next_state, done)
 
-                self.agent.learn()
+                self.render(reward)
+                if done or self.steps_since_checkpoint == 1000:
+                    self.handle_collision()
 
+                next_state = self._get_state()
                 state = next_state
-                episode_reward += reward
                 steps += 1
                 self.total_steps += 1
 
-                self.render(reward)
+                shouldComputeNewEplison = steps == self.MAX_STEPS_PER_EPISODE or done or self.steps_since_checkpoint == 250
+                self.agent.learn(shouldComputeEplison=shouldComputeNewEplison)
+
                 self.clock.tick(60)  # now time penalty used elsewhere
 
             print(
                 f"Episode {self.episode} | Total Reward: {episode_reward:.2f} | Steps: {steps}")
             if self.episode % self.SAVE_EVERY == 0:
                 self.save_model()
+            self.episode += 1
 
         pygame.quit()
 
@@ -113,6 +126,7 @@ class Game:
         for cp in self.checkpoints:
             cp.is_active = cp.is_passed = False
         self.checkpoints[0].is_active = True
+        self.prev_checkpoint_dist = None
 
         self.consecutive_checkpoints = 0
         self.combo_multiplier = 1.0
@@ -130,79 +144,48 @@ class Game:
                 self.running = False
 
     def _compute_reward(self, state, action):
-        # Base reward: progress through checkpoints
-        reward = self.score/50
+        reward = 0
 
-        # Example: use mid-left and mid-right ray distances
-        # left = self.car.closest_ray_distances[0]  # Adjust index to match cast_rays()
-        # right = self.car.closest_ray_distances[-1]
-        #
-        # # Symmetry reward (max at center)
-        # symmetry = 1 - abs(left - right) / self.car.ray_length
-        # reward += symmetry * self.SYMMETRY_REWARD_FACTOR
+        if (action == 5 or action == 6 or action == 1):
+            reward += 1
+        elif (action == 7 or action == 8 or action == 2):
+            reward += 0.05
+        elif (action == 3 or action == 4):
+            reward -= 0.05
+        else:
+            reward -= 1
 
-        # if action in self.ACCEL_ACTIONS:
-        #     reward += self.ACCELERATION_PRIORITIZATION_BONUS
-        # elif action in self.DECEL_ACTIONS or action in self.NO_ACCEL_ACTIONS:
-        #     reward -= self.ACCELERATION_PRIORITIZATION_BONUS * 0.5  # Mild penalty for non-acceleration
+        # Velocity Reward
+        reward += min(self.car.vel / self.car.max_vel, 1.0)
 
-        # # Smooth driving: penalize steering changes
-        # prev_angle = self.car.prev_angle if hasattr(self.car, 'prev_angle') else self.car.angle
-        # angle_diff = abs(self.car.soll_angle - prev_angle)
-        # reward -= angle_diff * 0.01
-        # self.car.prev_angle = self.car.angle
-
-        # Time penalty
-        reward -= self.TIME_PENALTY
-
-        if self.steps_since_checkpoint > 50:
-            reward -= self.TIME_PENALTY
-
-        #  Velocity bonus
-
-        # if self.car.vel < 0.1:
-        #     reward -= self.LOW_VELOCITY_PENALTY_FACTOR
-        # else:
-        #     vel_ratio = abs(self.car.vel) / self.car.max_vel
-        #     reward += vel_ratio * self.VELOCITY_BONUS_FACTOR
-
-        # Proximity penalty: smooth based
-        # min_dist = min(self.car.closest_ray_distances)
-        # if min_dist < self.MIN_SAFE_DISTANCE:
-        #     reward -= (self.MIN_SAFE_DISTANCE - min_dist) * \
-        #         self.EDGE_PENALTY_FACTOR
-
-        # Progress reward: inversely proportional to distance (non-linear scaling)
-        next_cp = self.checkpoints[self.current_checkpoint_index]
-        car_pos = np.array([self.car.x, self.car.y])
-        cp_center = np.array(
-            [(next_cp.x1 + next_cp.x2) / 2, (next_cp.y1 + next_cp.y2) / 2])
-
-        dist = np.linalg.norm(car_pos - cp_center)
-        normalized_dist = dist / np.hypot(self.width, self.height)
-        #
-        # # Nonlinear shaping: steeper reward near the checkpoint
-        # # Max ~2.0 near checkpoint, drops off faster
-        progress_reward = (1 - normalized_dist) ** 2 * 2.0
-        if self.car.vel > 0.2:
-            reward += progress_reward
-
-        # Steering smoothness
-        # alignment = math.cos(self.car.soll_angle - self.car.angle)
-        # reward += alignment * 0.5
+        reward += self._calculate_wall_proximity_penalty()
 
         return reward
 
+    def _calculate_wall_proximity_penalty(self):
+        penalty = 0.01
+        threshold = 10  # pixels
+
+        for dist, length in self.car.closest_ray_distances:
+            norm_dist = dist / length
+            if norm_dist < threshold / length:
+                # stronger penalty as it gets closer
+                penalty -= (1.0 - norm_dist) * 0.5
+        return penalty
+
     def _apply_action(self, action):
+        if action == 0:
+            print("No action")
+            return
         mapping = {
-            0: (self.car.accelerate, 1),
-            1: (self.car.accelerate, -1),
-            2: (self.car.turn, -1),
-            3: (self.car.turn, 1),
-            4: ((self.car.accelerate, self.car.turn), (1, -1)),
-            5: ((self.car.accelerate, self.car.turn), (1, 1)),
-            6: ((self.car.accelerate, self.car.turn), (-1, -1)),
-            7: ((self.car.accelerate, self.car.turn), (-1, 1)),
+            1: (self.car.accelerate, 1),
+            2: (self.car.accelerate, -1),
+            3: (self.car.turn, -1),
+            4: (self.car.turn, 1),
+            5: ((self.car.accelerate, self.car.turn), (1, -1)),
+            6: ((self.car.accelerate, self.car.turn), (1, 1)),
+            7: ((self.car.accelerate, self.car.turn), (-1, -1)),
+            8: ((self.car.accelerate, self.car.turn), (-1, 1)),
         }
         if action in mapping:
             funcs, args = mapping[action]
@@ -227,6 +210,7 @@ class Game:
         self.current_checkpoint_index = (
             self.current_checkpoint_index + 1) % len(self.checkpoints)
         self.checkpoints[self.current_checkpoint_index].is_active = True
+        self.prev_checkpoint_dist = None
 
     def _calculate_checkpoint_reward(self, checkpoint):
         vel_ratio = min(1.0, abs(self.current_velocity) / self.car.max_vel)
@@ -261,8 +245,23 @@ class Game:
         pygame.display.flip()
 
     def save_model(self):
-        self.agent.save_model(self.SAVE_PATH)
-        print(f"Model saved at episode {self.episode} -> {self.SAVE_PATH}")
+        self.agent.online_net.save(self.ORGINAL_SAVE_PATH)
+        self.agent.target_net.save(self.TARGET_SAVE_PATH)
+        np.save(self.EPSILON_SAVE_PATH, self.agent.epsilon)
+        np.save(self.EPISODES_SAVE_PATH, self.episode)
+        self.agent.save_memory(self.MEMORY_SAVE_PATH)
+
+    def load_model(self):
+        if os.path.exists(self.ORGINAL_SAVE_PATH):
+            self.agent.online_net.load_weights(self.ORGINAL_SAVE_PATH)
+        if os.path.exists(self.TARGET_SAVE_PATH):
+            self.agent.target_net.load_weights(self.TARGET_SAVE_PATH)
+        if os.path.exists(self.EPSILON_SAVE_PATH):
+            self.agent.epsilon = np.load(self.EPSILON_SAVE_PATH)
+        if os.path.exists(self.EPISODES_SAVE_PATH):
+            self.episode = int(np.load(self.EPISODES_SAVE_PATH))
+        if os.path.exists(self.MEMORY_SAVE_PATH):
+            self.agent.load_memory(self.MEMORY_SAVE_PATH)
 
     def _draw_text(self, text, pos, size, color=(255, 255, 255)):
         font = pygame.font.Font(None, size)

@@ -2,20 +2,29 @@ import numpy as np
 from collections import deque
 import random
 import tensorflow as tf
+import pickle
+import os
+
 
 class DDQNAgent:
     def __init__(self, state_size, action_size):
         self.state_size = state_size
         self.action_size = action_size
-        self.memory = deque(maxlen=100_000)
+        self.memory = []
+        self.priorities = []
+        self.priority_alpha = 0.6
+        self.priority_beta = 0.4
 
         self.gamma = 0.99
         self.epsilon = 1.0
         self.epsilon_min = 0.05
         self.epsilon_decay = 0.995
+        self.epsilon_priority = 1e-6
 
         self.batch_size = 128
         self.update_target_every = 1000
+
+        self.epos = 1
         self.step_count = 0
 
         self.optimizer = tf.keras.optimizers.Adam(learning_rate=5e-5)
@@ -46,7 +55,13 @@ class DDQNAgent:
             self.target_net.set_weights(new_weights)
 
     def store_experience(self, state, action, reward, next_state, done):
+        max_priorities = max(self.priorities, default=1.0)
         self.memory.append((state, action, reward, next_state, done))
+        self.priorities.append(max_priorities)
+
+        if len(self.memory) > 10000:
+            self.memory.pop(0)
+            self.priorities.pop(0)
 
     def choose_action(self, state):
         if np.random.rand() <= self.epsilon:
@@ -55,48 +70,68 @@ class DDQNAgent:
         q_values = self.online_net.predict(state, verbose=0)
         return np.argmax(q_values[0])
 
-    def learn(self):
+    def learn(self, shouldComputeEplison=False):
         if len(self.memory) < self.batch_size:
             return
 
         minibatch = random.sample(self.memory, self.batch_size)
-        states = np.array([x[0] for x in minibatch], dtype=np.float32)
-        actions = np.array([x[1] for x in minibatch], dtype=np.int32)
-        rewards = np.array([x[2] for x in minibatch], dtype=np.float32)
-        next_states = np.array([
-            x[3] if x[3] is not None else np.zeros(self.state_size)
-            for x in minibatch
-        ], dtype=np.float32)
-        dones = np.array([x[4] for x in minibatch], dtype=np.float32)
+        probs = np.array(self.priorities) ** self.priority_alpha
+        probs /= probs.sum()
+
+        indices = np.random.choice(len(self.memory), self.batch_size, p=probs)
+        minibatch = [self.memory[i] for i in indices]
+
+        # --- Extract tensors from minibatch ---
+        states, actions, rewards, next_states, dones = map(
+            np.array, zip(*minibatch))
 
         online_next_q = self.online_net.predict(next_states, verbose=0)
-        target_next_q = self.target_net.predict(next_states, verbose=0)
         best_actions = np.argmax(online_next_q, axis=1)
+
+        target_next_q = self.target_net.predict(next_states, verbose=0)
         target_q = rewards + (1 - dones) * self.gamma * target_next_q[
             np.arange(self.batch_size), best_actions
         ]
 
         with tf.GradientTape() as tape:
-            q_values = self.online_net(states)
+            q_values = self.online_net(states, training=True)
             current_q = tf.reduce_sum(
                 q_values * tf.one_hot(actions, self.action_size), axis=1)
-            loss = tf.keras.losses.MSE(target_q, current_q)
+
+            td_errors = target_q - current_q.numpy()
+            self.last_td_erros = td_errors
+
+            total = len(self.memory)
+            weights = (total * probs[indices]) ** (-self.priority_beta)
+            weights /= weights.max()
+            weights_tensor = tf.convert_to_tensor(weights, dtype=tf.float32)
+
+            huder_loss = tf.keras.losses.Huber(
+                reduction=tf.keras.losses.Reduction.NONE)
+            loss = tf.reduce_mean(huder_loss(
+                target_q, current_q) * weights_tensor)
 
         grads = tape.gradient(loss, self.online_net.trainable_variables)
-        self.optimizer.apply_gradients(zip(grads, self.online_net.trainable_variables))
+        self.optimizer.apply_gradients(
+            zip(grads, self.online_net.trainable_variables))
 
         self.step_count += 1
-        if self.step_count % self.update_target_every == 0:
-            self._update_target_network(hard_copy=False)
+        for i, error in zip(indices, td_errors):
+            self.priorities[i] = abs(error) + self.epsilon_priority
+        # if self.step_count % self.update_target_every == 0:
+            # self._update_target_network(hard_copy=False)
 
-        if self.epsilon > self.epsilon_min:
+        if shouldComputeEplison and self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
 
-        print(f"[Step {self.step_count}] Loss: {loss.numpy():.4f}, Epsilon: {self.epsilon:.4f}")
+        print(
+            f"[Step {self.step_count}] Loss: {loss.numpy():.4f}, Epsilon: {self.epsilon:.4f}")
 
-    def save_model(self, path):
-        self.online_net.save(path)
+    def save_memory(self, filepath):
+        with open(filepath, 'wb') as f:
+            pickle.dump(list(self.memory)[-50_000:], f)
 
-    def load_model(self, path):
-        self.online_net = tf.keras.models.load_model(path)
-        self._update_target_network(hard_copy=True)
+    def load_memory(self, filepath):
+        if not os.path.exists(filepath):
+            with open(filepath, 'rb') as f:
+                self.memory = pickle.load(f)

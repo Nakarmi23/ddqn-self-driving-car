@@ -18,7 +18,7 @@ class Car:
         self.height = 14
         self.vel = 0
         self.max_vel = 15
-        self.dvel = 0.2
+        self.dvel = 0.15
         self.angle = math.radians(rotation)  # Physics angle in radians
         self.soll_angle = self.angle
 
@@ -50,7 +50,7 @@ class Car:
         self.rect = self.image.get_rect(center=(self.x, self.y))
 
         # Ray casting system
-        self.ray_length = 100
+        self.ray_length = 80
         self.closest_rays = []
         self.closest_ray_distances = []
 
@@ -142,14 +142,14 @@ class Car:
         ray_definition = [
             (self.right_center, 0, self.ray_length),
             (self.front_right, -30, self.ray_length),
-            (self.back_right, 30, 30),
-            # (self.front, -120, 130),
-            # (self.front, -110, 160),
-            (self.front, -90, self.ray_length),
-            # (self.front, -70, 160),
-            # (self.front, -50, 130),
-            # (self.back, 90, 40),
-            (self.back_left, 135, 30),
+            (self.back_right, 30, 60),
+            (self.front, -120, 90),
+            (self.front, -110, 100),
+            (self.front, -90, 130),
+            (self.front, -70, 100),
+            (self.front, -50, 90),
+            (self.back, 90, 70),
+            (self.back_left, 135, 60),
             (self.front_left, -135, self.ray_length),
             (self.left_center, 180, self.ray_length)
         ]
