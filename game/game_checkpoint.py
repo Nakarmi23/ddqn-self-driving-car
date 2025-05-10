@@ -1,5 +1,6 @@
 import pygame
 import math
+from .game_point import Point
 
 
 class Checkpoint:
@@ -12,6 +13,10 @@ class Checkpoint:
         self.difficulty_factor = difficulty_factor
         self.is_active = False  # Add activation state
         self.is_passed = False  # Track completion
+
+    @property
+    def center(self):
+        return Point((self.x1 + self.x2) / 2, (self.y1 + self.y2) / 2)
 
     def __getStartCords(self):
         return (self.x1, self.y1)

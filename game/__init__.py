@@ -151,6 +151,16 @@ class Game:
 
         pygame.quit()
 
+    def _angle_to_checkpoint(self):
+        checkpoint = self.checkpoints[self.current_checkpoint_index]
+        car_angle = self.car.angle
+        dx = checkpoint.center.x - self.car.front.x
+        dy = checkpoint.center.y - self.car.front.y
+        desired_angle = math.degrees(math.atan2(dy, dx))
+        angle_diff = (desired_angle - car_angle) % 360 - 180
+
+        return angle_diff
+
     def _reset_game_state(self):
         self.car = Car(*self.track.starting_position,
                        self.track, self.track.starting_rotation)
@@ -193,6 +203,10 @@ class Game:
         reward += min(self.car.vel / self.car.max_vel, 1.0)
 
         reward += self._calculate_wall_proximity_penalty()
+
+        angle_diff = self._angle_to_checkpoint()
+        alignment_reward = max(0, 1 - angle_diff / 180)
+        reward += alignment_reward
 
         return reward
 
