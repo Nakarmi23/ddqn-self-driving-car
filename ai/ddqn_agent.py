@@ -27,7 +27,8 @@ class DDQNAgent:
         self.epos = 1
         self.step_count = 0
 
-        self.optimizer = tf.keras.optimizers.Adam(learning_rate=5e-5)
+        self.optimizer = tf.keras.optimizers.Adam(
+            learning_rate=5e-5, clipnorm=1.0)
         self.online_net = self._build_network()
         self.target_net = self._build_network()
 
@@ -43,7 +44,7 @@ class DDQNAgent:
         model.compile(loss=tf.keras.losses.Huber(), optimizer=self.optimizer)
         return model
 
-    def _update_target_network(self, hard_copy=False, tau=0.01):
+    def _update_target_network(self, hard_copy=True, tau=0.01):
         if hard_copy:
             self.target_net.set_weights(self.online_net.get_weights())
         else:
@@ -118,8 +119,9 @@ class DDQNAgent:
         self.step_count += 1
         for i, error in zip(indices, td_errors):
             self.priorities[i] = abs(error) + self.epsilon_priority
+
         # if self.step_count % self.update_target_every == 0:
-            # self._update_target_network(hard_copy=False)
+        self._update_target_network(hard_copy=False)
 
         if shouldComputeEplison and self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay

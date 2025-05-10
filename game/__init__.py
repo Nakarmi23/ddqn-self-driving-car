@@ -6,6 +6,7 @@ import math
 import numpy as np
 from ai.ddqn_agent import DDQNAgent
 import os
+import pickle
 
 
 class Game:
@@ -17,7 +18,14 @@ class Game:
     TARGET_SAVE_PATH = "models/ddqn_agent_target.keras"
     EPSILON_SAVE_PATH = "models/ddqn_agent_epsilon.npy"
     EPISODES_SAVE_PATH = "models/ddqn_agent_episodes.npy"
+    TOP_REWARD_SAVE_PATH = "models/ddqn_agent_top_rewards.npy"
+    RECENT_REWARD_SAVE_PATH = "models/ddqn_agent_recent_rewards.npy"
     MEMORY_SAVE_PATH = "models/ddqn_agent_memory.pickle"
+    TOP_N = 20
+    RECENT_N = 50
+    EPSILON_DROP_THRESHOLD = 0.7
+    RESET_EPSILON_VALUE = 0.2
+    EPSILON_BUMP_RATE = 0.005
 
     def __init__(self):
         pygame.init()
@@ -28,6 +36,8 @@ class Game:
         self.steps_since_checkpoint = 0
         self.prev_checkpoint_dist = None
         self.episode = 0
+        self.top_rewards = [0]
+        self.recent_rewards = [0]
 
         self.track = Track(self.surface)
         self.car = Car(*self.track.starting_position,
@@ -111,8 +121,32 @@ class Game:
 
             print(
                 f"Episode {self.episode} | Total Reward: {episode_reward:.2f} | Steps: {steps}")
+
+            self.recent_rewards.append(episode_reward)
+            if len(self.recent_rewards) > self.TOP_N:
+                self.recent_rewards.pop(0)
+
+            self.top_rewards.append(episode_reward)
+            self.top_rewards = sorted(self.top_rewards, reverse=True)[
+                :self.TOP_N]
+
+            combined_rewards = self.recent_rewards + self.top_rewards
+
+            avg_combined = sum(combined_rewards) / len(combined_rewards)
+
+            if episode_reward < self.EPSILON_DROP_THRESHOLD * avg_combined:
+                old_eps = self.agent.epsilon
+                self.agent.epsilon = min(max(
+                    self.RESET_EPSILON_VALUE, self.agent.epsilon + self.EPSILON_BUMP_RATE), 0.7)
+
+                print(
+                    f"[Epsilon Adjusted] Episode reward ({episode_reward:.2f}) < {self.EPSILON_DROP_THRESHOLD*100:.0f}% of top average ({avg_combined:.2f}).")
+                print(
+                    f"  → Epsilon increased from {old_eps:.3f} → {self.agent.epsilon:.3f}")
+
             if self.episode % self.SAVE_EVERY == 0:
                 self.save_model()
+
             self.episode += 1
 
         pygame.quit()
@@ -149,11 +183,11 @@ class Game:
         if (action == 5 or action == 6 or action == 1):
             reward += 1
         elif (action == 7 or action == 8 or action == 2):
-            reward += 0.05
+            reward += 0.03
         elif (action == 3 or action == 4):
-            reward -= 0.05
+            reward += 0.01
         else:
-            reward -= 1
+            reward -= 0.02
 
         # Velocity Reward
         reward += min(self.car.vel / self.car.max_vel, 1.0)
@@ -163,8 +197,8 @@ class Game:
         return reward
 
     def _calculate_wall_proximity_penalty(self):
-        penalty = 0.01
-        threshold = 10  # pixels
+        penalty = 0.03
+        threshold = 20  # pixels
 
         for dist, length in self.car.closest_ray_distances:
             norm_dist = dist / length
@@ -250,6 +284,10 @@ class Game:
         np.save(self.EPSILON_SAVE_PATH, self.agent.epsilon)
         np.save(self.EPISODES_SAVE_PATH, self.episode)
         self.agent.save_memory(self.MEMORY_SAVE_PATH)
+        with open(self.TOP_REWARD_SAVE_PATH, 'wb') as f:
+            pickle.dump(self.top_rewards, f)
+        with open(self.RECENT_REWARD_SAVE_PATH, 'wb') as f:
+            pickle.dump(self.recent_rewards, f)
 
     def load_model(self):
         if os.path.exists(self.ORGINAL_SAVE_PATH):
@@ -262,6 +300,12 @@ class Game:
             self.episode = int(np.load(self.EPISODES_SAVE_PATH))
         if os.path.exists(self.MEMORY_SAVE_PATH):
             self.agent.load_memory(self.MEMORY_SAVE_PATH)
+        if os.path.exists(self.TOP_REWARD_SAVE_PATH):
+            with open(self.TOP_REWARD_SAVE_PATH, 'rb') as f:
+                self.top_rewards = pickle.load(f)
+        if os.path.exists(self.RECENT_REWARD_SAVE_PATH):
+            with open(self.RECENT_REWARD_SAVE_PATH, 'rb') as f:
+                self.recent_rewards = pickle.load(f)
 
     def _draw_text(self, text, pos, size, color=(255, 255, 255)):
         font = pygame.font.Font(None, size)
