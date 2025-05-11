@@ -10,7 +10,7 @@ import pickle
 
 
 class Game:
-    CRASH_PENALTY_BASE = 30
+    CRASH_PENALTY_BASE = 50
     SAVE_EVERY = 10
     MAX_EPISODES = 1000
     MAX_STEPS_PER_EPISODE = 3000
@@ -24,7 +24,7 @@ class Game:
     TOP_N = 20
     RECENT_N = 50
     EPSILON_DROP_THRESHOLD = 0.7
-    RESET_EPSILON_VALUE = 0.2
+    RESET_EPSILON_VALUE = 0.1
     EPSILON_BUMP_RATE = 0.005
 
     def __init__(self):
@@ -124,23 +124,30 @@ class Game:
 
             self.recent_rewards.append(episode_reward)
             if len(self.recent_rewards) > self.TOP_N:
-                self.recent_rewards.pop(0)
+                self.recent_rewards = self.recent_rewards[-self.RECENT_N:]
 
             self.top_rewards.append(episode_reward)
             self.top_rewards = sorted(self.top_rewards, reverse=True)[
                 :self.TOP_N]
 
-            combined_rewards = self.recent_rewards + self.top_rewards
+            # combined_rewards = self.recent_rewards + self.top_rewards
 
-            avg_combined = sum(combined_rewards) / len(combined_rewards)
+            # avg_combined = sum(combined_rewards) / len(combined_rewards)
 
-            if episode_reward < self.EPSILON_DROP_THRESHOLD * avg_combined:
+            
+            avg_recent = sum(self.recent_rewards) / len(self.recent_rewards)
+            avg_top = sum(self.top_rewards) / len(self.top_rewards)
+
+            hybrid_avg = 0.65 * avg_recent + 0.35 * avg_top
+            
+
+            if episode_reward < self.EPSILON_DROP_THRESHOLD * hybrid_avg and self.agent.epsilon < 0.2:
                 old_eps = self.agent.epsilon
                 self.agent.epsilon = min(max(
                     self.RESET_EPSILON_VALUE, self.agent.epsilon + self.EPSILON_BUMP_RATE), 0.7)
 
                 print(
-                    f"[Epsilon Adjusted] Episode reward ({episode_reward:.2f}) < {self.EPSILON_DROP_THRESHOLD*100:.0f}% of top average ({avg_combined:.2f}).")
+                    f"[Epsilon Adjusted] Episode reward ({episode_reward:.2f}) < {self.EPSILON_DROP_THRESHOLD*100:.0f}% of hybrid average ({hybrid_avg:.2f}).")
                 print(
                     f"  → Epsilon increased from {old_eps:.3f} → {self.agent.epsilon:.3f}")
 
@@ -195,9 +202,9 @@ class Game:
         elif (action == 7 or action == 8 or action == 2):
             reward += 0.03
         elif (action == 3 or action == 4):
-            reward += 0.01
+            reward += 0.005
         else:
-            reward -= 0.02
+            reward += 0.002
 
         # Velocity Reward
         reward += min(self.car.vel / self.car.max_vel, 1.0)
