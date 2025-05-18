@@ -22,7 +22,7 @@ class Game:
     TOP_REWARD_SAVE_PATH = "models/ddqn_agent_top_rewards.npy"
     RECENT_REWARD_SAVE_PATH = "models/ddqn_agent_recent_rewards.npy"
     MEMORY_SAVE_PATH = "models/ddqn_agent_memory.pickle"
-    STEPS_SAVE_PATH = "models/ddqn_agent_steps.npy"
+    STEPS_SAVE_PATH = "models/ddqn_agent_steps.pickle"
     TOP_N = 20
     RECENT_N = 50
     EPSILON_DROP_THRESHOLD = 0.7
@@ -54,10 +54,6 @@ class Game:
         self.load_model()
 
     def run(self):
-
-        with open("logs/training_metrics.csv", "a") as f:
-            if self.episode == 0:  # write header once
-                f.write("steps,avg_loss,mean_td_error\n")
 
         while True:
             state = self._get_state()
@@ -122,11 +118,9 @@ class Game:
                 next_state = self._get_state()
                 state = next_state
                 steps += 1
-                self.total_steps += 1
 
                 shouldComputeNewEplison = steps == self.MAX_STEPS_PER_EPISODE or done or self.steps_since_checkpoint == 250
-                self.agent.learn(self.total_steps,
-                                 shouldComputeEplison=shouldComputeNewEplison)
+                self.agent.learn(shouldComputeEplison=shouldComputeNewEplison)
 
                 self.clock.tick(60)  # now time penalty used elsewhere
 
@@ -164,8 +158,6 @@ class Game:
                 self.save_model()
 
             with open("logs/episode_rewards.csv", "a") as f:
-                if self.episode == 0:  # write header once
-                    f.write("episode,reward,steps,epsilon\n")
                 f.write(
                     f"{self.episode},{episode_reward},{steps},{self.agent.epsilon}\n")
 
@@ -184,8 +176,6 @@ class Game:
 
                 # Save to file
                 with open("logs/q_value_metrics.csv", "a") as f:
-                    if self.episode == 0:  # write header once
-                        f.write("episode,mean_q,std_q,mean_delta_q,max_delta_q\n")
                     f.write(
                         f"{self.episode},{mean_online_q:.4f},{std_online_q:.4f},{mean_delta_q:.4f},{max_delta_q:.4f}\n")
 
@@ -218,7 +208,6 @@ class Game:
         self.combo_multiplier = 1.0
         self.current_velocity = 0.0
         self.highest_speed = 0.0
-        self.total_steps = 0
         self.max_combo = 1.0
 
     def _get_state(self):
@@ -237,9 +226,9 @@ class Game:
         elif (action == 7 or action == 8 or action == 2):
             reward += 0.03
         elif (action == 3 or action == 4):
-            reward += 0.005
+            reward += 0.001
         else:
-            reward += 0.002
+            reward += 0.001
 
         # Velocity Reward
         reward += min(self.car.vel / self.car.max_vel, 1.0)
@@ -345,7 +334,7 @@ class Game:
         with open(self.RECENT_REWARD_SAVE_PATH, 'wb') as f:
             pickle.dump(self.recent_rewards, f)
         with open(self.STEPS_SAVE_PATH, 'wb') as f:
-            pickle.dump(self.total_steps, f)
+            pickle.dump(self.agent.step_count, f)
 
     def load_model(self):
         if os.path.exists(self.ORGINAL_SAVE_PATH):
@@ -366,7 +355,7 @@ class Game:
                 self.recent_rewards = pickle.load(f)
         if os.path.exists(self.STEPS_SAVE_PATH):
             with open(self.STEPS_SAVE_PATH, 'rb') as f:
-                self.total_steps = pickle.load(f)
+                self.agent.step_count = pickle.load(f)
 
     def _draw_text(self, text, pos, size, color=(255, 255, 255)):
         font = pygame.font.Font(None, size)

@@ -71,7 +71,7 @@ class DDQNAgent:
         q_values = self.online_net.predict(state, verbose=0)
         return np.argmax(q_values[0])
 
-    def learn(self, step_count, shouldComputeEplison=False):
+    def learn(self, shouldComputeEplison=False):
         if len(self.memory) < self.batch_size:
             return
 
