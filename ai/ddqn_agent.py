@@ -16,7 +16,7 @@ class DDQNAgent:
         self.priority_beta = 0.4
 
         self.gamma = 0.99
-        self.epsilon = 1.0
+        self.epsilon = 1.00
         self.epsilon_min = 0.05
         self.epsilon_decay = 0.995
         self.epsilon_priority = 1e-6
@@ -71,7 +71,7 @@ class DDQNAgent:
         q_values = self.online_net.predict(state, verbose=0)
         return np.argmax(q_values[0])
 
-    def learn(self, shouldComputeEplison=False):
+    def learn(self, step_count, shouldComputeEplison=False):
         if len(self.memory) < self.batch_size:
             return
 
@@ -102,6 +102,8 @@ class DDQNAgent:
             td_errors = target_q - current_q.numpy()
             self.last_td_erros = td_errors
 
+            avg_td_error = np.mean(np.abs(td_errors))
+
             total = len(self.memory)
             weights = (total * probs[indices]) ** (-self.priority_beta)
             weights /= weights.max()
@@ -111,6 +113,10 @@ class DDQNAgent:
                 reduction=tf.keras.losses.Reduction.NONE)
             loss = tf.reduce_mean(huder_loss(
                 target_q, current_q) * weights_tensor)
+
+            with open("logs/training_metrics.csv", "a") as f:
+                f.write(
+                    f"{self.step_count},{loss.numpy():.4f},{avg_td_error:.4f}\n")
 
         grads = tape.gradient(loss, self.online_net.trainable_variables)
         self.optimizer.apply_gradients(

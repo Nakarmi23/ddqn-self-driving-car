@@ -7,6 +7,7 @@ import numpy as np
 from ai.ddqn_agent import DDQNAgent
 import os
 import pickle
+import random
 
 
 class Game:
@@ -21,6 +22,7 @@ class Game:
     TOP_REWARD_SAVE_PATH = "models/ddqn_agent_top_rewards.npy"
     RECENT_REWARD_SAVE_PATH = "models/ddqn_agent_recent_rewards.npy"
     MEMORY_SAVE_PATH = "models/ddqn_agent_memory.pickle"
+    STEPS_SAVE_PATH = "models/ddqn_agent_steps.npy"
     TOP_N = 20
     RECENT_N = 50
     EPSILON_DROP_THRESHOLD = 0.7
@@ -46,9 +48,17 @@ class Game:
         self._reset_game_state()
         self.agent = DDQNAgent(len(self.car.get_state()) + 2, 9)
 
+        # Create directory if it doesn't exist
+        os.makedirs("logs", exist_ok=True)
+        os.makedirs("models", exist_ok=True)
         self.load_model()
 
     def run(self):
+
+        with open("logs/training_metrics.csv", "a") as f:
+            if self.episode == 0:  # write header once
+                f.write("steps,avg_loss,mean_td_error\n")
+
         while True:
             state = self._get_state()
             episode_reward = 0
@@ -115,7 +125,8 @@ class Game:
                 self.total_steps += 1
 
                 shouldComputeNewEplison = steps == self.MAX_STEPS_PER_EPISODE or done or self.steps_since_checkpoint == 250
-                self.agent.learn(shouldComputeEplison=shouldComputeNewEplison)
+                self.agent.learn(self.total_steps,
+                                 shouldComputeEplison=shouldComputeNewEplison)
 
                 self.clock.tick(60)  # now time penalty used elsewhere
 
@@ -134,14 +145,12 @@ class Game:
 
             # avg_combined = sum(combined_rewards) / len(combined_rewards)
 
-            
             avg_recent = sum(self.recent_rewards) / len(self.recent_rewards)
             avg_top = sum(self.top_rewards) / len(self.top_rewards)
 
-            hybrid_avg = 0.65 * avg_recent + 0.35 * avg_top
-            
+            hybrid_avg = 0.60 * avg_recent + 0.40 * avg_top
 
-            if episode_reward < self.EPSILON_DROP_THRESHOLD * hybrid_avg and self.agent.epsilon < 0.2:
+            if episode_reward < self.EPSILON_DROP_THRESHOLD * hybrid_avg and self.agent.epsilon < 0.7:
                 old_eps = self.agent.epsilon
                 self.agent.epsilon = min(max(
                     self.RESET_EPSILON_VALUE, self.agent.epsilon + self.EPSILON_BUMP_RATE), 0.7)
@@ -153,6 +162,32 @@ class Game:
 
             if self.episode % self.SAVE_EVERY == 0:
                 self.save_model()
+
+            with open("logs/episode_rewards.csv", "a") as f:
+                if self.episode == 0:  # write header once
+                    f.write("episode,reward,steps,epsilon\n")
+                f.write(
+                    f"{self.episode},{episode_reward},{steps},{self.agent.epsilon}\n")
+
+            if self.episode % 50 == 0 and len(self.agent.memory) >= 50:
+                sampled = random.sample(self.agent.memory, 50)
+                states = np.array([s[0] for s in sampled])
+
+                online_q = self.agent.online_net.predict(states, verbose=0)
+                target_q = self.agent.target_net.predict(states, verbose=0)
+                delta_q = np.abs(online_q - target_q)
+
+                mean_online_q = np.mean(online_q)
+                std_online_q = np.std(online_q)
+                mean_delta_q = np.mean(delta_q)
+                max_delta_q = np.max(delta_q)
+
+                # Save to file
+                with open("logs/q_value_metrics.csv", "a") as f:
+                    if self.episode == 0:  # write header once
+                        f.write("episode,mean_q,std_q,mean_delta_q,max_delta_q\n")
+                    f.write(
+                        f"{self.episode},{mean_online_q:.4f},{std_online_q:.4f},{mean_delta_q:.4f},{max_delta_q:.4f}\n")
 
             self.episode += 1
 
@@ -309,6 +344,8 @@ class Game:
             pickle.dump(self.top_rewards, f)
         with open(self.RECENT_REWARD_SAVE_PATH, 'wb') as f:
             pickle.dump(self.recent_rewards, f)
+        with open(self.STEPS_SAVE_PATH, 'wb') as f:
+            pickle.dump(self.total_steps, f)
 
     def load_model(self):
         if os.path.exists(self.ORGINAL_SAVE_PATH):
@@ -327,6 +364,9 @@ class Game:
         if os.path.exists(self.RECENT_REWARD_SAVE_PATH):
             with open(self.RECENT_REWARD_SAVE_PATH, 'rb') as f:
                 self.recent_rewards = pickle.load(f)
+        if os.path.exists(self.STEPS_SAVE_PATH):
+            with open(self.STEPS_SAVE_PATH, 'rb') as f:
+                self.total_steps = pickle.load(f)
 
     def _draw_text(self, text, pos, size, color=(255, 255, 255)):
         font = pygame.font.Font(None, size)
