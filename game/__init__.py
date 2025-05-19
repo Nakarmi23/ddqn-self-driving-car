@@ -226,9 +226,9 @@ class Game:
         elif (action == 7 or action == 8 or action == 2):
             reward += 0.03
         elif (action == 3 or action == 4):
-            reward += 0.001
+            reward -= 0.001
         else:
-            reward += 0.001
+            reward -= 0.001
 
         # Velocity Reward
         reward += min(self.car.vel / self.car.max_vel, 1.0)
