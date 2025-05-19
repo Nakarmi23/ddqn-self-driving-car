@@ -111,7 +111,7 @@ class Game:
                 self.agent.store_experience(
                     state, action, reward, next_state, done)
 
-                self.render(reward)
+                self.render(episode_reward)
                 if done or self.steps_since_checkpoint == 1000:
                     self.handle_collision()
 
@@ -134,10 +134,6 @@ class Game:
             self.top_rewards.append(episode_reward)
             self.top_rewards = sorted(self.top_rewards, reverse=True)[
                 :self.TOP_N]
-
-            # combined_rewards = self.recent_rewards + self.top_rewards
-
-            # avg_combined = sum(combined_rewards) / len(combined_rewards)
 
             avg_recent = sum(self.recent_rewards) / len(self.recent_rewards)
             avg_top = sum(self.top_rewards) / len(self.top_rewards)
@@ -205,10 +201,8 @@ class Game:
         self.prev_checkpoint_dist = None
 
         self.consecutive_checkpoints = 0
-        self.combo_multiplier = 1.0
         self.current_velocity = 0.0
         self.highest_speed = 0.0
-        self.max_combo = 1.0
 
     def _get_state(self):
         return np.array(self.car.get_state() + [self.current_checkpoint_index / len(self.track.checkpoints)] + [self.steps_since_checkpoint / 250], dtype=np.float32)
@@ -279,10 +273,7 @@ class Game:
         self.highest_speed = max(
             self.highest_speed, abs(self.current_velocity))
 
-        cp_reward = self._calculate_checkpoint_reward(checkpoint)
-        self.score += cp_reward
         self.consecutive_checkpoints += 1
-        self._update_combo_multiplier()
 
         checkpoint.is_active = False
         checkpoint.is_passed = True
@@ -290,18 +281,6 @@ class Game:
             self.current_checkpoint_index + 1) % len(self.checkpoints)
         self.checkpoints[self.current_checkpoint_index].is_active = True
         self.prev_checkpoint_dist = None
-
-    def _calculate_checkpoint_reward(self, checkpoint):
-        vel_ratio = min(1.0, abs(self.current_velocity) / self.car.max_vel)
-        speed_bonus = 1.0 + vel_ratio**2
-        combo_bonus = 1.0 + (self.consecutive_checkpoints * 0.15)
-        return checkpoint.base_reward * checkpoint.difficulty_factor * speed_bonus * combo_bonus * self.combo_multiplier
-
-    def _update_combo_multiplier(self):
-        speed_factor = min(2.0, 1.0 + abs(self.car.vel)/self.car.max_vel)
-        streak_factor = 1.0 + (self.consecutive_checkpoints * 0.05)
-        self.combo_multiplier = min(3.0, speed_factor * streak_factor)
-        self.max_combo = max(self.max_combo, self.combo_multiplier)
 
     def handle_collision(self):
         self.screen_flash()
@@ -320,7 +299,6 @@ class Game:
         self.track.render()
         self.car.draw(self.surface)
         self._draw_speedometer()
-        self._draw_combo_meter()
         pygame.display.flip()
 
     def save_model(self):
@@ -371,12 +349,3 @@ class Game:
         pygame.draw.arc(self.surface, (0, 255, 0),
                         (c[0]-r, c[1]-r, r*2, r*2), -math.pi/2, -math.pi/2+2*math.pi*ratio, 5)
         self._draw_text(f"{speed:.1f}", (c[0]-15, c[1]-10), 24)
-
-    def _draw_combo_meter(self):
-        ratio = self.combo_multiplier/3.0
-        pygame.draw.rect(self.surface, (50, 50, 50),
-                         (20, self.height-40, 200, 20))
-        pygame.draw.rect(self.surface, (255, 215, 0),
-                         (20, self.height-40, 200*ratio, 20))
-        self._draw_text(
-            f"COMBO x{self.combo_multiplier:.1f}", (20, self.height-60), 24)
