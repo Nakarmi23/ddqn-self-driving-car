@@ -41,7 +41,8 @@ class Game:
         self.top_rewards = [0]
         self.recent_rewards = [0]
 
-        self.track = Track(self.surface)
+        self.track = Track(self.surface, os.environ.get(
+            "TRACK_TEMPLATE", "template5"))
         self.car = Car(*self.track.starting_position,
                        self.track, self.track.starting_rotation)
 
