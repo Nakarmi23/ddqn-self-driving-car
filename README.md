@@ -13,7 +13,7 @@ This project implements a self-driving car simulation using Deep Q-Learning (DQN
 
 ## Requirements
 
-- Python 3.9+
+- Python 3.12 recommended (Python 3.14 is not currently supported by TensorFlow)
 - Dependencies listed in `requirements.txt`:
   - numpy >= 2.0.2
   - tensorflow >= 2.19.0
@@ -24,14 +24,17 @@ This project implements a self-driving car simulation using Deep Q-Learning (DQN
 1. Create and activate a virtual environment:
 
 ```bash
-# Create virtual environment
-python -m venv venv
+# Create a Python 3.12 virtual environment
+# On Windows:
+py -3.12 -m venv .venv312
+# On macOS/Linux:
+python3.12 -m venv .venv312
 
 # Activate virtual environment
 # On Windows:
-venv\Scripts\activate
+.venv312\Scripts\activate
 # On macOS/Linux:
-source venv/bin/activate
+source .venv312/bin/activate
 ```
 
 2. Install dependencies:
