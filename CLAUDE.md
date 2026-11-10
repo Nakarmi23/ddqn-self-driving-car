@@ -18,7 +18,7 @@ There are no lint/test/build commands configured in this repo (no pytest, no lin
 
 ## Architecture
 
-**Training loop lives in `game/__init__.py` (`Game` class), not `main.py`.** `main.py` just does `Game().run()`. `Game.run()` is an infinite outer loop over episodes, with an inner loop that steps the environment until collision, `MAX_STEPS_PER_EPISODE`, or 1000 steps without a checkpoint. Look here first for anything about reward shaping, episode/epsilon bookkeeping, or save/load.
+**Training loop lives in `game/__init__.py` (`Game` class), not `main.py`.** `main.py` just does `Game().run()`. `Game.run()` is an infinite outer loop over episodes, with an inner loop that steps the environment until collision, `MAX_STEPS_PER_EPISODE`, or `STALL_LIMIT` (1000) steps without a checkpoint. Crash and stall timeout are failures (crash penalty, stored `done=True`); hitting `MAX_STEPS_PER_EPISODE` is truncation (no penalty, `done=False`). Look here first for anything about reward shaping, episode/epsilon bookkeeping, or save/load.
 
 **Agent lives in `ai/ddqn_agent.py` (`DDQNAgent`, built on PyTorch).** Owns the online/target `QNetwork` (`nn.Module`) networks, epsilon-greedy action selection, the (unbounded-list-based) prioritized replay buffer, and the DDQN learning step (online net picks the action, target net evaluates it). `DDQNAgent.__init__` picks a device via `get_device()` (CUDA > MPS > CPU, in that order) and moves both networks to it; all tensors built in `choose_action`/`learn` are created on that device. `Game` calls `choose_action`, `store_experience`, and `learn` each step; `Game` also reaches into agent internals directly for logging/saving (`agent.online_net`, `agent.memory`, `agent.step_count`, `agent.epsilon`, `agent.device`) and uses `agent.predict_batch(net, states)` for the periodic Q-value divergence check rather than calling the network module directly.
 
@@ -29,7 +29,7 @@ There are no lint/test/build commands configured in this repo (no pytest, no lin
 - `game_checkpoint.py`, `game_wall.py`, `game_point.py`, `game_intersection.py` — small geometry/data classes used by the above.
 - `game/track_templates/template1.py` — the actual track layout (walls, checkpoints, starting position/rotation). Add new tracks here.
 
-**RL state vector** = `Car.get_state()` (rays + velocity + traction + drift angle) + `[current_checkpoint_index / num_checkpoints]` + `[steps_since_checkpoint / 250]`, assembled in `Game._get_state()`. If you change the ray count or append/remove features in either `Car.get_state()` or `Game._get_state()`, the two must stay in sync since `DDQNAgent`'s input layer size is derived from `len(car.get_state()) + 2` at construction time in `Game.__init__`.
+**RL state vector** = `Car.get_state()` (rays + velocity + traction + drift angle) + `[current_checkpoint_index / num_checkpoints]` + `[min(steps_since_checkpoint / STALL_LIMIT, 1.0)]`, assembled in `Game._get_state()`. If you change the ray count or append/remove features in either `Car.get_state()` or `Game._get_state()`, the two must stay in sync since `DDQNAgent`'s input layer size is derived from `len(car.get_state()) + 2` at construction time in `Game.__init__`.
 
 **Action space** is 9 discrete actions (0=noop, 1/2=accel/reverse, 3/4=turn left/right, 5-8=combined accel+turn), mapped in `Game._apply_action`.
 

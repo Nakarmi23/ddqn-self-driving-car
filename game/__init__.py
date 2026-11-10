@@ -130,15 +130,20 @@ class Game:
             stalled = self.steps_since_checkpoint >= self.STALL_LIMIT
             episode_over = crashed or stalled
 
-            # Terminal semantics (stall timeout penalised but stored as
-            # done=False) are tracked separately in issue #4.
+            # Terminal semantics:
+            # - crash and stall timeout are both failures: penalised and
+            #   stored with done=True. The stall is a true terminal state
+            #   because steps_since_checkpoint / STALL_LIMIT is part of the
+            #   observation, so the agent can see the deadline coming.
+            # - hitting MAX_STEPS_PER_EPISODE is truncation: no penalty and
+            #   done=False, so the target still bootstraps from next_state.
             if episode_over:
                 reward -= self.CRASH_PENALTY_BASE + abs(self.car.vel)
 
             episode_reward += reward
 
             self.agent.store_experience(
-                state, action, reward, next_state, crashed)
+                state, action, reward, next_state, episode_over)
 
             self.render(episode_reward)
 
@@ -227,7 +232,7 @@ class Game:
         self.highest_speed = 0.0
 
     def _get_state(self):
-        return np.array(self.car.get_state() + [self.current_checkpoint_index / len(self.track.checkpoints)] + [self.steps_since_checkpoint / 250], dtype=np.float32)
+        return np.array(self.car.get_state() + [self.current_checkpoint_index / len(self.track.checkpoints)] + [min(self.steps_since_checkpoint / self.STALL_LIMIT, 1.0)], dtype=np.float32)
 
     def handle_events(self):
         """Pump the pygame event queue. Returns True if the window was closed."""
