@@ -6,8 +6,9 @@ import math
 import numpy as np
 import torch
 from ai.ddqn_agent import DDQNAgent
+from utils.csv_logger import CsvLogger
+import glob
 import os
-import pickle
 import random
 
 
@@ -16,14 +17,9 @@ class Game:
     SAVE_EVERY = 10
     MAX_EPISODES = 1000
     MAX_STEPS_PER_EPISODE = 3000
-    ORGINAL_SAVE_PATH = "models/ddqn_agent_original.pt"
-    TARGET_SAVE_PATH = "models/ddqn_agent_target.pt"
-    EPSILON_SAVE_PATH = "models/ddqn_agent_epsilon.npy"
-    EPISODES_SAVE_PATH = "models/ddqn_agent_episodes.npy"
-    TOP_REWARD_SAVE_PATH = "models/ddqn_agent_top_rewards.npy"
-    RECENT_REWARD_SAVE_PATH = "models/ddqn_agent_recent_rewards.npy"
-    MEMORY_SAVE_PATH = "models/ddqn_agent_memory.pickle"
-    STEPS_SAVE_PATH = "models/ddqn_agent_steps.pickle"
+    CHECKPOINT_LATEST_PATH = "models/checkpoint_latest.pt"
+    CHECKPOINT_HISTORY_DIR = "models/history"
+    KEEP_HISTORY_COUNT = 5
     TOP_N = 20
     RECENT_N = 50
     EPSILON_DROP_THRESHOLD = 0.7
@@ -53,6 +49,13 @@ class Game:
         # Create directory if it doesn't exist
         os.makedirs("logs", exist_ok=True)
         os.makedirs("models", exist_ok=True)
+        os.makedirs(self.CHECKPOINT_HISTORY_DIR, exist_ok=True)
+
+        self.episode_log = CsvLogger(
+            "logs/episode_rewards.csv", ["episode", "reward", "steps", "epsilon"])
+        self.q_value_log = CsvLogger("logs/q_value_metrics.csv", [
+            "episode", "mean_online_q", "std_online_q", "mean_delta_q", "max_delta_q"])
+
         self.load_model()
 
     def run(self):
@@ -155,9 +158,8 @@ class Game:
             if self.episode % self.SAVE_EVERY == 0:
                 self.save_model()
 
-            with open("logs/episode_rewards.csv", "a") as f:
-                f.write(
-                    f"{self.episode},{episode_reward},{steps},{self.agent.epsilon}\n")
+            self.episode_log.log(
+                self.episode, f"{episode_reward:.2f}", steps, f"{self.agent.epsilon:.4f}")
 
             if self.episode % 50 == 0 and len(self.agent.memory) >= 50:
                 sampled = random.sample(self.agent.memory, 50)
@@ -174,10 +176,9 @@ class Game:
                 mean_delta_q = np.mean(delta_q)
                 max_delta_q = np.max(delta_q)
 
-                # Save to file
-                with open("logs/q_value_metrics.csv", "a") as f:
-                    f.write(
-                        f"{self.episode},{mean_online_q:.4f},{std_online_q:.4f},{mean_delta_q:.4f},{max_delta_q:.4f}\n")
+                self.q_value_log.log(
+                    self.episode, f"{mean_online_q:.4f}", f"{std_online_q:.4f}",
+                    f"{mean_delta_q:.4f}", f"{max_delta_q:.4f}")
 
             self.episode += 1
 
@@ -306,40 +307,36 @@ class Game:
         pygame.display.flip()
 
     def save_model(self):
-        torch.save(self.agent.online_net.state_dict(), self.ORGINAL_SAVE_PATH)
-        torch.save(self.agent.target_net.state_dict(), self.TARGET_SAVE_PATH)
-        np.save(self.EPSILON_SAVE_PATH, self.agent.epsilon)
-        np.save(self.EPISODES_SAVE_PATH, self.episode)
-        self.agent.save_memory(self.MEMORY_SAVE_PATH)
-        with open(self.TOP_REWARD_SAVE_PATH, 'wb') as f:
-            pickle.dump(self.top_rewards, f)
-        with open(self.RECENT_REWARD_SAVE_PATH, 'wb') as f:
-            pickle.dump(self.recent_rewards, f)
-        with open(self.STEPS_SAVE_PATH, 'wb') as f:
-            pickle.dump(self.agent.step_count, f)
+        checkpoint = self.agent.export_state()
+        checkpoint.update({
+            "episode": self.episode,
+            "top_rewards": self.top_rewards,
+            "recent_rewards": self.recent_rewards,
+        })
+
+        torch.save(checkpoint, self.CHECKPOINT_LATEST_PATH)
+
+        history_path = os.path.join(
+            self.CHECKPOINT_HISTORY_DIR, f"checkpoint_ep{self.episode:06d}.pt")
+        torch.save(checkpoint, history_path)
+        self._prune_history()
+
+    def _prune_history(self):
+        checkpoints = sorted(glob.glob(os.path.join(
+            self.CHECKPOINT_HISTORY_DIR, "checkpoint_ep*.pt")))
+        for stale_checkpoint in checkpoints[:-self.KEEP_HISTORY_COUNT]:
+            os.remove(stale_checkpoint)
 
     def load_model(self):
-        if os.path.exists(self.ORGINAL_SAVE_PATH):
-            self.agent.online_net.load_state_dict(
-                torch.load(self.ORGINAL_SAVE_PATH, map_location=self.agent.device))
-        if os.path.exists(self.TARGET_SAVE_PATH):
-            self.agent.target_net.load_state_dict(
-                torch.load(self.TARGET_SAVE_PATH, map_location=self.agent.device))
-        if os.path.exists(self.EPSILON_SAVE_PATH):
-            self.agent.epsilon = np.load(self.EPSILON_SAVE_PATH)
-        if os.path.exists(self.EPISODES_SAVE_PATH):
-            self.episode = int(np.load(self.EPISODES_SAVE_PATH))
-        if os.path.exists(self.MEMORY_SAVE_PATH):
-            self.agent.load_memory(self.MEMORY_SAVE_PATH)
-        if os.path.exists(self.TOP_REWARD_SAVE_PATH):
-            with open(self.TOP_REWARD_SAVE_PATH, 'rb') as f:
-                self.top_rewards = pickle.load(f)
-        if os.path.exists(self.RECENT_REWARD_SAVE_PATH):
-            with open(self.RECENT_REWARD_SAVE_PATH, 'rb') as f:
-                self.recent_rewards = pickle.load(f)
-        if os.path.exists(self.STEPS_SAVE_PATH):
-            with open(self.STEPS_SAVE_PATH, 'rb') as f:
-                self.agent.step_count = pickle.load(f)
+        if not os.path.exists(self.CHECKPOINT_LATEST_PATH):
+            return
+
+        checkpoint = torch.load(
+            self.CHECKPOINT_LATEST_PATH, map_location=self.agent.device)
+        self.agent.import_state(checkpoint)
+        self.episode = checkpoint["episode"]
+        self.top_rewards = checkpoint["top_rewards"]
+        self.recent_rewards = checkpoint["recent_rewards"]
 
     def _draw_text(self, text, pos, size, color=(255, 255, 255)):
         font = pygame.font.Font(None, size)
