@@ -23,9 +23,11 @@ class Game:
     KEEP_HISTORY_COUNT = 5
     TOP_N = 20
     RECENT_N = 50
-    EPSILON_DROP_THRESHOLD = 0.7
-    RESET_EPSILON_VALUE = 0.1
-    EPSILON_BUMP_RATE = 0.005
+    # Training budget in learning steps (agent.step_count). Stopping on it
+    # is tracked in issue #10; for now it only sets the epsilon schedule.
+    TOTAL_TRAIN_STEPS = 1_000_000
+    # Fraction of the budget over which epsilon decays linearly 1.0 -> min.
+    EPSILON_DECAY_FRACTION = 0.4
 
     def __init__(self):
         pygame.init()
@@ -44,7 +46,9 @@ class Game:
                        self.track, self.track.starting_rotation)
 
         self._reset_game_state()
-        self.agent = DDQNAgent(len(self.car.get_state()) + 2, 9)
+        self.agent = DDQNAgent(
+            len(self.car.get_state()) + 2, 9,
+            epsilon_decay_steps=int(self.TOTAL_TRAIN_STEPS * self.EPSILON_DECAY_FRACTION))
 
         # Create directory if it doesn't exist
         os.makedirs("logs", exist_ok=True)
@@ -141,8 +145,7 @@ class Game:
             state = next_state
             steps += 1
 
-            shouldComputeNewEplison = steps == self.MAX_STEPS_PER_EPISODE or crashed or self.steps_since_checkpoint == 250
-            self.agent.learn(shouldComputeEplison=shouldComputeNewEplison)
+            self.agent.learn()
 
             self.clock.tick(60)  # now time penalty used elsewhere
 
@@ -166,21 +169,6 @@ class Game:
         self.top_rewards.append(episode_reward)
         self.top_rewards = sorted(self.top_rewards, reverse=True)[
             :self.TOP_N]
-
-        avg_recent = sum(self.recent_rewards) / len(self.recent_rewards)
-        avg_top = sum(self.top_rewards) / len(self.top_rewards)
-
-        hybrid_avg = 0.60 * avg_recent + 0.40 * avg_top
-
-        if episode_reward < self.EPSILON_DROP_THRESHOLD * hybrid_avg and self.agent.epsilon < 0.7:
-            old_eps = self.agent.epsilon
-            self.agent.epsilon = min(max(
-                self.RESET_EPSILON_VALUE, self.agent.epsilon + self.EPSILON_BUMP_RATE), 0.7)
-
-            print(
-                f"[Epsilon Adjusted] Episode reward ({episode_reward:.2f}) < {self.EPSILON_DROP_THRESHOLD*100:.0f}% of hybrid average ({hybrid_avg:.2f}).")
-            print(
-                f"  → Epsilon increased from {old_eps:.3f} → {self.agent.epsilon:.3f}")
 
         self.episode_log.log(
             self.episode, f"{episode_reward:.2f}", steps, f"{self.agent.epsilon:.4f}")
