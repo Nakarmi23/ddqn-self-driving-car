@@ -16,10 +16,14 @@ class Game:
     # Reward scale, see docs/adr/0001-progress-led-reward.md.
     CRASH_PENALTY_BASE = 50
     CHECKPOINT_BONUS = 100
-    SHAPING_WEIGHT = 0.1  # weight on speed-toward + alignment shaping
-    # Per-step cost. Equals the mean alignment shaping for a random heading
-    # (0.1 * 0.5), so aimless driving nets ~0 instead of a survival bonus.
-    TIME_COST = 0.05
+    SPEED_WEIGHT = 0.1  # weight on speed toward the checkpoint (zero-mean)
+    ALIGNMENT_WEIGHT = 0.04  # weight on alignment (mean 0.5 for random heading)
+    # Per-step cost. Equals the mean alignment shaping for a random heading,
+    # so aimless driving nets ~0 instead of a survival bonus. Kept small so a
+    # stall (STALL_LIMIT * TIME_COST + crash penalty, ~-70) costs about the
+    # same as crashing (-50..-65); a larger cost made crashing the cheaper
+    # way out once stuck.
+    TIME_COST = ALIGNMENT_WEIGHT * 0.5
     SAVE_EVERY = 10
     MAX_EPISODES = 1000
     MAX_STEPS_PER_EPISODE = 3000
@@ -271,7 +275,7 @@ class Game:
         # 1 when pointing at the checkpoint, 0 when pointing directly away.
         alignment = 1 - abs(angle_diff) / math.pi
 
-        reward = self.SHAPING_WEIGHT * (speed_toward + alignment)
+        reward = self.SPEED_WEIGHT * speed_toward + self.ALIGNMENT_WEIGHT * alignment
         reward -= self.TIME_COST
         reward += self._calculate_wall_proximity_penalty()
         return reward
