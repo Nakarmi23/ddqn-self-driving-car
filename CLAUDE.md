@@ -38,3 +38,17 @@ There are no lint/test/build commands configured in this repo (no pytest, no lin
 **Persistence**: every `SAVE_EVERY` (10) episodes, `Game.save_model()` bundles everything needed to resume — online/target `state_dict`s, epsilon, step count, replay memory + priorities (via `DDQNAgent.export_state()`), plus episode count and top/recent reward history — into one dict and writes it with `torch.save` to `models/checkpoint_latest.pt` (always overwritten, read back on startup by `load_model()`/`DDQNAgent.import_state()`, `map_location=agent.device` so a checkpoint saved on one device loads on another). The same dict is also written to `models/history/checkpoint_ep{N:06d}.pt`; `Game._prune_history()` deletes all but the newest `KEEP_HISTORY_COUNT` (5) history files, so there's always a rollback point if a run degrades. These files are checked into the repo working tree and are expected to change on every training run — that's normal, not a sign of an unrelated diff. `models.bak/` is a manual backup snapshot, not code the agent touches.
 
 **Logging**: `utils/csv_logger.py` (`CsvLogger`) is a small shared helper — writes a CSV header once per file, then appends rows. `Game` owns `self.episode_log` (`logs/episode_rewards.csv`, per episode) and `self.q_value_log` (`logs/q_value_metrics.csv`, every 50 episodes from a sample of replay memory, to track online-vs-target Q divergence); `DDQNAgent` owns `self.training_log` (`logs/training_metrics.csv`, per learning step). Add a new metric by instantiating another `CsvLogger` rather than hand-rolling `open(...).write`.
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues (Nakarmi23/ddqn-self-driving-car) via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one root `GLOSSARY.md` plus `docs/adr/` (both created lazily). See `docs/agents/domain.md`.
