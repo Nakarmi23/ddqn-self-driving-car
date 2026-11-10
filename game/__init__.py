@@ -4,6 +4,7 @@ from .game_point import Point
 import pygame
 import math
 import numpy as np
+import torch
 from ai.ddqn_agent import DDQNAgent
 import os
 import pickle
@@ -15,8 +16,8 @@ class Game:
     SAVE_EVERY = 10
     MAX_EPISODES = 1000
     MAX_STEPS_PER_EPISODE = 3000
-    ORGINAL_SAVE_PATH = "models/ddqn_agent_original.keras"
-    TARGET_SAVE_PATH = "models/ddqn_agent_target.keras"
+    ORGINAL_SAVE_PATH = "models/ddqn_agent_original.pt"
+    TARGET_SAVE_PATH = "models/ddqn_agent_target.pt"
     EPSILON_SAVE_PATH = "models/ddqn_agent_epsilon.npy"
     EPISODES_SAVE_PATH = "models/ddqn_agent_episodes.npy"
     TOP_REWARD_SAVE_PATH = "models/ddqn_agent_top_rewards.npy"
@@ -162,8 +163,10 @@ class Game:
                 sampled = random.sample(self.agent.memory, 50)
                 states = np.array([s[0] for s in sampled])
 
-                online_q = self.agent.online_net.predict(states, verbose=0)
-                target_q = self.agent.target_net.predict(states, verbose=0)
+                online_q = self.agent.predict_batch(
+                    self.agent.online_net, states)
+                target_q = self.agent.predict_batch(
+                    self.agent.target_net, states)
                 delta_q = np.abs(online_q - target_q)
 
                 mean_online_q = np.mean(online_q)
@@ -303,8 +306,8 @@ class Game:
         pygame.display.flip()
 
     def save_model(self):
-        self.agent.online_net.save(self.ORGINAL_SAVE_PATH)
-        self.agent.target_net.save(self.TARGET_SAVE_PATH)
+        torch.save(self.agent.online_net.state_dict(), self.ORGINAL_SAVE_PATH)
+        torch.save(self.agent.target_net.state_dict(), self.TARGET_SAVE_PATH)
         np.save(self.EPSILON_SAVE_PATH, self.agent.epsilon)
         np.save(self.EPISODES_SAVE_PATH, self.episode)
         self.agent.save_memory(self.MEMORY_SAVE_PATH)
@@ -317,9 +320,11 @@ class Game:
 
     def load_model(self):
         if os.path.exists(self.ORGINAL_SAVE_PATH):
-            self.agent.online_net.load_weights(self.ORGINAL_SAVE_PATH)
+            self.agent.online_net.load_state_dict(
+                torch.load(self.ORGINAL_SAVE_PATH, map_location=self.agent.device))
         if os.path.exists(self.TARGET_SAVE_PATH):
-            self.agent.target_net.load_weights(self.TARGET_SAVE_PATH)
+            self.agent.target_net.load_state_dict(
+                torch.load(self.TARGET_SAVE_PATH, map_location=self.agent.device))
         if os.path.exists(self.EPSILON_SAVE_PATH):
             self.agent.epsilon = np.load(self.EPSILON_SAVE_PATH)
         if os.path.exists(self.EPISODES_SAVE_PATH):
