@@ -17,13 +17,13 @@ The per-step reward paid the agent for staying alive rather than for getting rou
 | Crash or stall | −50 − \|vel\| (at most −65) |
 
 - About +3 per step just for driving. With γ = 0.99 that stream is worth about 300, so a crash mostly cost the lost stream rather than the penalty, and circling until the stall limit earned about 3000.
-- The progress clip saturated at 1 px of movement per step. The car moves up to 15 px per step and checkpoints are about 78 px apart on `template1`, so progress paid for time spent near the right direction, not distance covered. Driving slowly earned more.
+- The progress clip saturated at 1 px of movement per step. The car moves up to 15 px per step and checkpoints are about 67 px apart on the default track `template5` (78 px on `template1`), so progress paid for time spent near the right direction, not distance covered. Driving slowly earned more.
 
 ## Decision
 
 Progress is the main dense signal. Shaping is small and close to zero on average for aimless driving.
 
-- **Progress:** `(prev_dist - dist) / max_vel`, clipped to ±1. Full speed straight at the checkpoint earns about +1 per step. Summed over a segment, it equals the distance covered divided by `max_vel`, about 5 per checkpoint on `template1`, whatever the speed.
+- **Progress:** `(prev_dist - dist) / max_vel`, clipped to ±1. Full speed straight at the checkpoint earns about +1 per step. Summed over a segment, it equals the distance covered divided by `max_vel`, about 4.5 per checkpoint on `template5`, whatever the speed.
 - **Removed:** the per-action bias (+1 for accelerating) and the +0.03 wall-proximity baseline.
 - **Shaping:** `SHAPING_WEIGHT * (speed_toward + alignment)` with `SHAPING_WEIGHT = 0.1`.
   - `speed_toward = (vel / max_vel) * cos(angle_diff)` is positive when driving at the checkpoint, negative when driving away, and about 0 when circling.
@@ -34,6 +34,6 @@ Progress is the main dense signal. Shaping is small and close to zero on average
 ## Consequences
 
 - Circling until a stall now nets roughly 0 from shaping, minus the stall penalty, so it is strictly worse than reaching checkpoints.
-- A checkpoint segment is worth about +5 progress plus +100 bonus. The bonus dominates, and the progress and shaping terms guide the car between checkpoints.
+- A checkpoint segment is worth about +4.5 progress plus +100 bonus. The bonus dominates, and the progress and shaping terms guide the car between checkpoints.
 - Episode rewards are on a much smaller scale than before, so they can't be compared with logs from earlier runs. Weights trained on the old reward should not be resumed.
 - All constants are class attributes on `Game`, so they can be tuned in one place.
