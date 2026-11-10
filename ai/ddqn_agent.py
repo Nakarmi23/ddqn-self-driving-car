@@ -2,8 +2,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import pickle
-import os
+
+from utils.csv_logger import CsvLogger
 
 
 def get_device():
@@ -56,6 +56,9 @@ class DDQNAgent:
         self.optimizer = optim.Adam(
             self.online_net.parameters(), lr=5e-5)
         self.huber_loss = nn.HuberLoss(reduction='none')
+
+        self.training_log = CsvLogger(
+            "logs/training_metrics.csv", ["step", "loss", "avg_td_error"])
 
         self._update_target_network(hard_copy=True)
 
@@ -140,9 +143,8 @@ class DDQNAgent:
         elementwise_loss = self.huber_loss(current_q, target_q)
         loss = (elementwise_loss * weights_t).mean()
 
-        with open("logs/training_metrics.csv", "a") as f:
-            f.write(
-                f"{self.step_count},{loss.item():.4f},{avg_td_error:.4f}\n")
+        self.training_log.log(
+            self.step_count, f"{loss.item():.4f}", f"{avg_td_error:.4f}")
 
         self.optimizer.zero_grad()
         loss.backward()
@@ -169,11 +171,21 @@ class DDQNAgent:
             q_values = net(states_t)
         return q_values.cpu().numpy()
 
-    def save_memory(self, filepath):
-        with open(filepath, 'wb') as f:
-            pickle.dump(list(self.memory)[-50_000:], f)
+    def export_state(self):
+        """Bundle everything needed to resume training into one dict."""
+        return {
+            "online_state_dict": self.online_net.state_dict(),
+            "target_state_dict": self.target_net.state_dict(),
+            "epsilon": self.epsilon,
+            "step_count": self.step_count,
+            "memory": list(self.memory)[-50_000:],
+            "priorities": list(self.priorities)[-50_000:],
+        }
 
-    def load_memory(self, filepath):
-        if not os.path.exists(filepath):
-            with open(filepath, 'rb') as f:
-                self.memory = pickle.load(f)
+    def import_state(self, data):
+        self.online_net.load_state_dict(data["online_state_dict"])
+        self.target_net.load_state_dict(data["target_state_dict"])
+        self.epsilon = data["epsilon"]
+        self.step_count = data["step_count"]
+        self.memory = data["memory"]
+        self.priorities = data["priorities"]
