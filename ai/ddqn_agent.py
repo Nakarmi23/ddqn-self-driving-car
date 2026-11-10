@@ -1,9 +1,30 @@
 import numpy as np
-from collections import deque
-import random
-import tensorflow as tf
+import torch
+import torch.nn as nn
+import torch.optim as optim
 import pickle
 import os
+
+
+def get_device():
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+class QNetwork(nn.Module):
+    def __init__(self, state_size, action_size):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(state_size, 256),
+            nn.ReLU(),
+            nn.Linear(256, action_size),
+        )
+
+    def forward(self, x):
+        return self.net(x)
 
 
 class DDQNAgent:
@@ -27,33 +48,28 @@ class DDQNAgent:
         self.epos = 1
         self.step_count = 0
 
-        self.optimizer = tf.keras.optimizers.Adam(
-            learning_rate=5e-5, clipnorm=1.0)
-        self.online_net = self._build_network()
-        self.target_net = self._build_network()
+        self.device = get_device()
+        print(f"[DDQNAgent] Using device: {self.device}")
+
+        self.online_net = QNetwork(state_size, action_size).to(self.device)
+        self.target_net = QNetwork(state_size, action_size).to(self.device)
+        self.optimizer = optim.Adam(
+            self.online_net.parameters(), lr=5e-5)
+        self.huber_loss = nn.HuberLoss(reduction='none')
 
         self._update_target_network(hard_copy=True)
 
-    def _build_network(self):
-        model = tf.keras.Sequential([
-            tf.keras.layers.Input(shape=(self.state_size,)),
-            tf.keras.layers.Dense(256, activation='relu'),
-            # tf.keras.layers.Dense(64, activation='relu'),
-            tf.keras.layers.Dense(self.action_size, activation='linear')
-        ])
-        model.compile(loss=tf.keras.losses.Huber(), optimizer=self.optimizer)
-        return model
-
     def _update_target_network(self, hard_copy=True, tau=0.01):
         if hard_copy:
-            self.target_net.set_weights(self.online_net.get_weights())
+            self.target_net.load_state_dict(self.online_net.state_dict())
         else:
-            online_weights = self.online_net.get_weights()
-            target_weights = self.target_net.get_weights()
-            new_weights = [
-                tau * ow + (1 - tau) * tw for ow, tw in zip(online_weights, target_weights)
-            ]
-            self.target_net.set_weights(new_weights)
+            online_state = self.online_net.state_dict()
+            target_state = self.target_net.state_dict()
+            new_state = {
+                k: tau * online_state[k] + (1 - tau) * target_state[k]
+                for k in online_state
+            }
+            self.target_net.load_state_dict(new_state)
 
     def store_experience(self, state, action, reward, next_state, done):
         max_priorities = max(self.priorities, default=1.0)
@@ -67,15 +83,16 @@ class DDQNAgent:
     def choose_action(self, state):
         if np.random.rand() <= self.epsilon:
             return np.random.randint(self.action_size)
-        state = np.expand_dims(state, axis=0)
-        q_values = self.online_net.predict(state, verbose=0)
-        return np.argmax(q_values[0])
+        state_t = torch.as_tensor(
+            state, dtype=torch.float32, device=self.device).unsqueeze(0)
+        with torch.no_grad():
+            q_values = self.online_net(state_t)
+        return int(torch.argmax(q_values[0]).item())
 
     def learn(self, shouldComputeEplison=False):
         if len(self.memory) < self.batch_size:
             return
 
-        minibatch = random.sample(self.memory, self.batch_size)
         probs = np.array(self.priorities) ** self.priority_alpha
         probs /= probs.sum()
 
@@ -86,54 +103,71 @@ class DDQNAgent:
         states, actions, rewards, next_states, dones = map(
             np.array, zip(*minibatch))
 
-        online_next_q = self.online_net.predict(next_states, verbose=0)
-        best_actions = np.argmax(online_next_q, axis=1)
+        states_t = torch.as_tensor(
+            states, dtype=torch.float32, device=self.device)
+        actions_t = torch.as_tensor(
+            actions, dtype=torch.long, device=self.device)
+        rewards_t = torch.as_tensor(
+            rewards, dtype=torch.float32, device=self.device)
+        next_states_t = torch.as_tensor(
+            next_states, dtype=torch.float32, device=self.device)
+        dones_t = torch.as_tensor(
+            dones, dtype=torch.float32, device=self.device)
 
-        target_next_q = self.target_net.predict(next_states, verbose=0)
-        target_q = rewards + (1 - dones) * self.gamma * target_next_q[
-            np.arange(self.batch_size), best_actions
-        ]
+        with torch.no_grad():
+            online_next_q = self.online_net(next_states_t)
+            best_actions = torch.argmax(online_next_q, dim=1)
 
-        with tf.GradientTape() as tape:
-            q_values = self.online_net(states, training=True)
-            current_q = tf.reduce_sum(
-                q_values * tf.one_hot(actions, self.action_size), axis=1)
+            target_next_q = self.target_net(next_states_t)
+            target_q = rewards_t + (1 - dones_t) * self.gamma * target_next_q.gather(
+                1, best_actions.unsqueeze(1)
+            ).squeeze(1)
 
-            td_errors = target_q - current_q.numpy()
-            self.last_td_erros = td_errors
+        q_values = self.online_net(states_t)
+        current_q = q_values.gather(1, actions_t.unsqueeze(1)).squeeze(1)
 
-            avg_td_error = np.mean(np.abs(td_errors))
+        td_errors = (target_q - current_q).detach().cpu().numpy()
+        self.last_td_erros = td_errors
 
-            total = len(self.memory)
-            weights = (total * probs[indices]) ** (-self.priority_beta)
-            weights /= weights.max()
-            weights_tensor = tf.convert_to_tensor(weights, dtype=tf.float32)
+        avg_td_error = np.mean(np.abs(td_errors))
 
-            huder_loss = tf.keras.losses.Huber(
-                reduction=tf.keras.losses.Reduction.NONE)
-            loss = tf.reduce_mean(huder_loss(
-                target_q, current_q) * weights_tensor)
+        total = len(self.memory)
+        weights = (total * probs[indices]) ** (-self.priority_beta)
+        weights /= weights.max()
+        weights_t = torch.as_tensor(
+            weights, dtype=torch.float32, device=self.device)
 
-            with open("logs/training_metrics.csv", "a") as f:
-                f.write(
-                    f"{self.step_count},{loss.numpy():.4f},{avg_td_error:.4f}\n")
+        elementwise_loss = self.huber_loss(current_q, target_q)
+        loss = (elementwise_loss * weights_t).mean()
 
-        grads = tape.gradient(loss, self.online_net.trainable_variables)
-        self.optimizer.apply_gradients(
-            zip(grads, self.online_net.trainable_variables))
+        with open("logs/training_metrics.csv", "a") as f:
+            f.write(
+                f"{self.step_count},{loss.item():.4f},{avg_td_error:.4f}\n")
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(
+            self.online_net.parameters(), max_norm=1.0)
+        self.optimizer.step()
 
         self.step_count += 1
         for i, error in zip(indices, td_errors):
             self.priorities[i] = abs(error) + self.epsilon_priority
 
-        # if self.step_count % self.update_target_every == 0:
         self._update_target_network(hard_copy=False)
 
         if shouldComputeEplison and self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
 
         print(
-            f"[Step {self.step_count}] Loss: {loss.numpy():.4f}, Epsilon: {self.epsilon:.4f}")
+            f"[Step {self.step_count}] Loss: {loss.item():.4f}, Epsilon: {self.epsilon:.4f}")
+
+    def predict_batch(self, net, states):
+        states_t = torch.as_tensor(
+            np.array(states), dtype=torch.float32, device=self.device)
+        with torch.no_grad():
+            q_values = net(states_t)
+        return q_values.cpu().numpy()
 
     def save_memory(self, filepath):
         with open(filepath, 'wb') as f:
