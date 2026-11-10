@@ -13,7 +13,17 @@ import random
 
 
 class Game:
+    # Reward scale, see docs/adr/0001-progress-led-reward.md.
     CRASH_PENALTY_BASE = 50
+    CHECKPOINT_BONUS = 100
+    SPEED_WEIGHT = 0.1  # weight on speed toward the checkpoint (zero-mean)
+    ALIGNMENT_WEIGHT = 0.04  # weight on alignment (mean 0.5 for random heading)
+    # Per-step cost. Equals the mean alignment shaping for a random heading,
+    # so aimless driving nets ~0 instead of a survival bonus. Kept small so a
+    # stall (STALL_LIMIT * TIME_COST + crash penalty, ~-70) costs about the
+    # same as crashing (-50..-65); a larger cost made crashing the cheaper
+    # way out once stuck.
+    TIME_COST = ALIGNMENT_WEIGHT * 0.5
     SAVE_EVERY = 10
     MAX_EPISODES = 1000
     MAX_STEPS_PER_EPISODE = 3000
@@ -113,17 +123,21 @@ class Game:
             if self.prev_checkpoint_dist is None:
                 self.prev_checkpoint_dist = dist_to_cp
 
-            progess_reward = self.prev_checkpoint_dist - dist_to_cp
+            # Distance closed this step, scaled by top speed so full speed
+            # straight at the checkpoint earns ~+1. Summed over a segment it
+            # equals the distance covered, independent of how slowly the car
+            # drove it. See docs/adr/0001-progress-led-reward.md.
+            progress_reward = (self.prev_checkpoint_dist - dist_to_cp) / self.car.max_vel
             self.prev_checkpoint_dist = dist_to_cp
 
-            progess_reward = max(min(progess_reward, 1.0), -1.0)
+            progress_reward = max(min(progress_reward, 1.0), -1.0)
 
-            reward = self._compute_reward(state, action)
+            reward = self._compute_reward()
 
-            reward += progess_reward
+            reward += progress_reward
 
             if has_passed:
-                reward += 100
+                reward += self.CHECKPOINT_BONUS
 
             next_state = self._get_state()
             crashed = self.car.check_collisions(self.track.walls_grid)
@@ -206,14 +220,19 @@ class Game:
             self.save_model()
 
     def _angle_to_checkpoint(self):
+        """Signed angle in radians, wrapped to [-pi, pi), between the car's
+        heading and the direction from the car's front to the active
+        checkpoint. 0 means the car points straight at it.
+
+        Car.update() moves the car along rotate((0, vel), angle), i.e.
+        direction (-sin a, cos a), whose screen-space atan2 is angle + pi/2.
+        """
         checkpoint = self.checkpoints[self.current_checkpoint_index]
-        car_angle = self.car.angle
+        heading = self.car.angle + math.pi / 2
         dx = checkpoint.center.x - self.car.front.x
         dy = checkpoint.center.y - self.car.front.y
-        desired_angle = math.degrees(math.atan2(dy, dx))
-        angle_diff = (desired_angle - car_angle) % 360 - 180
-
-        return angle_diff
+        desired = math.atan2(dy, dx)
+        return (desired - heading + math.pi) % (2 * math.pi) - math.pi
 
     def _reset_game_state(self):
         self.car = Car(*self.track.starting_position,
@@ -242,31 +261,27 @@ class Game:
                 quit_requested = True
         return quit_requested
 
-    def _compute_reward(self, state, action):
-        reward = 0
-
-        if (action == 5 or action == 6 or action == 1):
-            reward += 1
-        elif (action == 7 or action == 8 or action == 2):
-            reward += 0.03
-        elif (action == 3 or action == 4):
-            reward -= 0.001
-        else:
-            reward -= 0.001
-
-        # Velocity Reward
-        reward += min(self.car.vel / self.car.max_vel, 1.0)
-
-        reward += self._calculate_wall_proximity_penalty()
-
+    def _compute_reward(self):
+        """Per-step shaping terms. Progress, checkpoint bonus and crash
+        penalty are added in _run_episode. Shaping is kept small and roughly
+        zero-mean for aimless driving so that only progress pays; see
+        docs/adr/0001-progress-led-reward.md."""
         angle_diff = self._angle_to_checkpoint()
-        alignment_reward = max(0, 1 - angle_diff / 180)
-        reward += alignment_reward
 
+        # Speed toward the checkpoint: positive driving at it, negative
+        # driving away, ~0 on average when circling.
+        speed_toward = (self.car.vel / self.car.max_vel) * math.cos(angle_diff)
+
+        # 1 when pointing at the checkpoint, 0 when pointing directly away.
+        alignment = 1 - abs(angle_diff) / math.pi
+
+        reward = self.SPEED_WEIGHT * speed_toward + self.ALIGNMENT_WEIGHT * alignment
+        reward -= self.TIME_COST
+        reward += self._calculate_wall_proximity_penalty()
         return reward
 
     def _calculate_wall_proximity_penalty(self):
-        penalty = 0.03
+        penalty = 0.0
         threshold = 20  # pixels
 
         for dist, length in self.car.closest_ray_distances:
