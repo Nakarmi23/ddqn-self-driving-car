@@ -331,8 +331,12 @@ class Game:
         if not os.path.exists(self.CHECKPOINT_LATEST_PATH):
             return
 
+        # weights_only=False: the checkpoint bundles the replay memory (numpy
+        # arrays/scalars), which PyTorch >= 2.6's safe unpickler rejects. This
+        # file is only ever written by save_model() locally, so it's trusted.
         checkpoint = torch.load(
-            self.CHECKPOINT_LATEST_PATH, map_location=self.agent.device)
+            self.CHECKPOINT_LATEST_PATH, map_location=self.agent.device,
+            weights_only=False)
         self.agent.import_state(checkpoint)
         self.episode = checkpoint["episode"]
         self.top_rewards = checkpoint["top_rewards"]
