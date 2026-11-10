@@ -28,7 +28,7 @@ class QNetwork(nn.Module):
 
 
 class DDQNAgent:
-    def __init__(self, state_size, action_size):
+    def __init__(self, state_size, action_size, epsilon_decay_steps=400_000):
         self.state_size = state_size
         self.action_size = action_size
         self.memory = []
@@ -37,9 +37,12 @@ class DDQNAgent:
         self.priority_beta = 0.4
 
         self.gamma = 0.99
-        self.epsilon = 1.00
+        # Linear schedule: epsilon_start -> epsilon_min over
+        # epsilon_decay_steps learning steps, then held at epsilon_min.
+        # Derived from step_count, so it resumes correctly from a checkpoint.
+        self.epsilon_start = 1.00
         self.epsilon_min = 0.05
-        self.epsilon_decay = 0.995
+        self.epsilon_decay_steps = epsilon_decay_steps
         self.epsilon_priority = 1e-6
 
         self.batch_size = 128
@@ -47,6 +50,7 @@ class DDQNAgent:
 
         self.epos = 1
         self.step_count = 0
+        self.epsilon = self.scheduled_epsilon()
 
         self.device = get_device()
         print(f"[DDQNAgent] Using device: {self.device}")
@@ -74,6 +78,11 @@ class DDQNAgent:
             }
             self.target_net.load_state_dict(new_state)
 
+    def scheduled_epsilon(self):
+        """Epsilon for the current step_count under the linear schedule."""
+        progress = min(self.step_count / self.epsilon_decay_steps, 1.0)
+        return self.epsilon_start + progress * (self.epsilon_min - self.epsilon_start)
+
     def store_experience(self, state, action, reward, next_state, done):
         max_priorities = max(self.priorities, default=1.0)
         self.memory.append((state, action, reward, next_state, done))
@@ -92,7 +101,7 @@ class DDQNAgent:
             q_values = self.online_net(state_t)
         return int(torch.argmax(q_values[0]).item())
 
-    def learn(self, shouldComputeEplison=False):
+    def learn(self):
         if len(self.memory) < self.batch_size:
             return
 
@@ -158,8 +167,7 @@ class DDQNAgent:
 
         self._update_target_network(hard_copy=False)
 
-        if shouldComputeEplison and self.epsilon > self.epsilon_min:
-            self.epsilon *= self.epsilon_decay
+        self.epsilon = self.scheduled_epsilon()
 
         print(
             f"[Step {self.step_count}] Loss: {loss.item():.4f}, Epsilon: {self.epsilon:.4f}")
@@ -185,7 +193,9 @@ class DDQNAgent:
     def import_state(self, data):
         self.online_net.load_state_dict(data["online_state_dict"])
         self.target_net.load_state_dict(data["target_state_dict"])
-        self.epsilon = data["epsilon"]
         self.step_count = data["step_count"]
+        # The saved "epsilon" is ignored: it's recomputed from step_count so
+        # a changed schedule (or an old checkpoint) can't leave it stale.
+        self.epsilon = self.scheduled_epsilon()
         self.memory = data["memory"]
         self.priorities = data["priorities"]
