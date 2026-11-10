@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A self-driving car simulation trained with a Double Deep Q-Network (DDQN). A pygame car drives a fixed race track, casting rays to sense walls, and a Keras/TensorFlow agent learns to steer/accelerate through checkpoints via reinforcement learning. There is no manual-play mode or test suite — `main.py` starts continuous training and runs forever until the window is closed.
+A self-driving car simulation trained with a Double Deep Q-Network (DDQN). A pygame car drives a fixed race track, casting rays to sense walls, and a PyTorch agent learns to steer/accelerate through checkpoints via reinforcement learning. There is no manual-play mode or test suite — `main.py` starts continuous training and runs forever until the window is closed.
 
 ## Running
 
@@ -14,13 +14,13 @@ A self-driving car simulation trained with a Double Deep Q-Network (DDQN). A pyg
 python main.py
 ```
 
-There are no lint/test/build commands configured in this repo (no pytest, no linter config). Training progress prints to stdout per step/episode.
+There are no lint/test/build commands configured in this repo (no pytest, no linter config). Training progress prints to stdout per step/episode, including a `[DDQNAgent] Using device: ...` line at startup showing whether it's running on CUDA, MPS, or CPU — see README for installing a GPU-enabled `torch` build per platform.
 
 ## Architecture
 
 **Training loop lives in `game/__init__.py` (`Game` class), not `main.py`.** `main.py` just does `Game().run()`. `Game.run()` is an infinite outer loop over episodes, with an inner loop that steps the environment until collision, `MAX_STEPS_PER_EPISODE`, or 1000 steps without a checkpoint. Look here first for anything about reward shaping, episode/epsilon bookkeeping, or save/load.
 
-**Agent lives in `ai/ddqn_agent.py` (`DDQNAgent`).** Owns the online/target Keras networks, epsilon-greedy action selection, the (unbounded-list-based) prioritized replay buffer, and the DDQN learning step (online net picks the action, target net evaluates it). `Game` calls `choose_action`, `store_experience`, and `learn` each step; `Game` also reaches into agent internals directly for logging/saving (`agent.online_net`, `agent.memory`, `agent.step_count`, `agent.epsilon`).
+**Agent lives in `ai/ddqn_agent.py` (`DDQNAgent`, built on PyTorch).** Owns the online/target `QNetwork` (`nn.Module`) networks, epsilon-greedy action selection, the (unbounded-list-based) prioritized replay buffer, and the DDQN learning step (online net picks the action, target net evaluates it). `DDQNAgent.__init__` picks a device via `get_device()` (CUDA > MPS > CPU, in that order) and moves both networks to it; all tensors built in `choose_action`/`learn` are created on that device. `Game` calls `choose_action`, `store_experience`, and `learn` each step; `Game` also reaches into agent internals directly for logging/saving (`agent.online_net`, `agent.memory`, `agent.step_count`, `agent.epsilon`, `agent.device`) and uses `agent.predict_batch(net, states)` for the periodic Q-value divergence check rather than calling the network module directly.
 
 **Game state/physics live under `game/`:**
 - `game_car.py` (`Car`) — physics (drift/traction/acceleration), 12-ray raycasting for wall sensing, hitbox-edge collision and checkpoint-crossing detection via line-segment intersection. `Car.get_state()` returns the car's portion of the RL state vector (normalized ray distances + velocity + traction + drift angle).
@@ -35,6 +35,20 @@ There are no lint/test/build commands configured in this repo (no pytest, no lin
 
 **Reward shaping** is spread across `Game._compute_reward` (action bias, velocity reward, wall-proximity penalty, checkpoint-alignment reward) and `Game.run` (progress-toward-checkpoint delta, +100 on checkpoint pass, crash penalty on collision/timeout). Changes to one should be considered against the others since they're summed into a single scalar per step.
 
-**Persistence**: every `SAVE_EVERY` (10) episodes, `Game.save_model()`/`load_model()` write/read the online and target networks, epsilon, episode count, replay memory, top/recent reward history, and step count under `models/`. These files (`.keras`, `.npy`, `.pickle`) are checked into the repo working tree and are expected to change on every training run — that's normal, not a sign of an unrelated diff. `models.bak/` is a manual backup snapshot, not code the agent touches.
+**Persistence**: every `SAVE_EVERY` (10) episodes, `Game.save_model()` bundles everything needed to resume — online/target `state_dict`s, epsilon, step count, replay memory + priorities (via `DDQNAgent.export_state()`), plus episode count and top/recent reward history — into one dict and writes it with `torch.save` to `models/checkpoint_latest.pt` (always overwritten, read back on startup by `load_model()`/`DDQNAgent.import_state()`, `map_location=agent.device` so a checkpoint saved on one device loads on another). The same dict is also written to `models/history/checkpoint_ep{N:06d}.pt`; `Game._prune_history()` deletes all but the newest `KEEP_HISTORY_COUNT` (5) history files, so there's always a rollback point if a run degrades. These files are checked into the repo working tree and are expected to change on every training run — that's normal, not a sign of an unrelated diff. `models.bak/` is a manual backup snapshot, not code the agent touches.
 
-**Logging**: `logs/episode_rewards.csv` (per episode) and `logs/training_metrics.csv` (per learning step) are appended to directly by `Game` and `DDQNAgent` respectively (plain `open(...).write`, not a logging library). `logs/q_value_metrics.csv` is written every 50 episodes from a sample of replay memory to track online-vs-target Q divergence.
+**Logging**: `utils/csv_logger.py` (`CsvLogger`) is a small shared helper — writes a CSV header once per file, then appends rows. `Game` owns `self.episode_log` (`logs/episode_rewards.csv`, per episode) and `self.q_value_log` (`logs/q_value_metrics.csv`, every 50 episodes from a sample of replay memory, to track online-vs-target Q divergence); `DDQNAgent` owns `self.training_log` (`logs/training_metrics.csv`, per learning step). Add a new metric by instantiating another `CsvLogger` rather than hand-rolling `open(...).write`.
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues (Nakarmi23/ddqn-self-driving-car) via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one root `GLOSSARY.md` plus `docs/adr/` (both created lazily). See `docs/agents/domain.md`.

@@ -13,10 +13,10 @@ This project implements a self-driving car simulation using Deep Q-Learning (DQN
 
 ## Requirements
 
-- Python 3.12 recommended (Python 3.14 is not currently supported by TensorFlow)
+- Python 3.9+ (any CPython 3.9-3.13 works with current PyTorch wheels)
 - Dependencies listed in `requirements.txt`:
   - numpy >= 2.0.2
-  - tensorflow >= 2.19.0
+  - torch >= 2.8.0
   - pygame >= 2.6.1
 
 ## Installation
@@ -24,17 +24,12 @@ This project implements a self-driving car simulation using Deep Q-Learning (DQN
 1. Create and activate a virtual environment:
 
 ```bash
-# Create a Python 3.12 virtual environment
 # On Windows:
-py -3.12 -m venv .venv312
+py -3.12 -m venv .venv
+.venv\Scripts\activate
 # On macOS/Linux:
-python3.12 -m venv .venv312
-
-# Activate virtual environment
-# On Windows:
-.venv312\Scripts\activate
-# On macOS/Linux:
-source .venv312/bin/activate
+python3.12 -m venv .venv
+source .venv/bin/activate
 ```
 
 2. Install dependencies:
@@ -42,6 +37,19 @@ source .venv312/bin/activate
 ```bash
 pip install -r requirements.txt
 ```
+
+This installs the CPU build of PyTorch everywhere, which already includes
+GPU support on Apple Silicon Macs (via MPS) with no extra steps. On Windows
+or Linux with an NVIDIA GPU, reinstall `torch` from the CUDA wheel index to
+enable GPU acceleration instead of CPU:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu128
+```
+
+(Pick the CUDA tag matching your driver from https://pytorch.org/get-started/locally/
+if `cu128` doesn't apply.) The agent auto-detects the best available device
+at startup (CUDA > MPS > CPU) — no code changes needed either way.
 
 ## Usage
 
