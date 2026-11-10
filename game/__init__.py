@@ -17,6 +17,7 @@ class Game:
     SAVE_EVERY = 10
     MAX_EPISODES = 1000
     MAX_STEPS_PER_EPISODE = 3000
+    STALL_LIMIT = 1000  # steps without passing a checkpoint before giving up
     CHECKPOINT_LATEST_PATH = "models/checkpoint_latest.pt"
     CHECKPOINT_HISTORY_DIR = "models/history"
     KEEP_HISTORY_COUNT = 5
@@ -31,7 +32,6 @@ class Game:
         self.width, self.height = 1000, 600
         self.surface = pygame.display.set_mode((self.width, self.height))
         self.clock = pygame.time.Clock()
-        self.running = True
         self.steps_since_checkpoint = 0
         self.prev_checkpoint_dist = None
         self.episode = 0
@@ -59,130 +59,158 @@ class Game:
         self.load_model()
 
     def run(self):
-
         while True:
-            state = self._get_state()
-            episode_reward = 0
-            steps = 0
-            self.running = True
-
-            while self.running and steps < self.MAX_STEPS_PER_EPISODE:
-                self.handle_events()
-                action = self.agent.choose_action(state)
-                self._apply_action(action)
-
-                self.car.prev_front_center = Point(
-                    self.car.right_center.x, self.car.right_center.y)
-                self.car.update()
-
-                current_checkpoint = self.checkpoints[self.current_checkpoint_index]
-                has_passed = self.car.check_checkpoint_collision(
-                    current_checkpoint)
-                if has_passed:
-                    self.steps_since_checkpoint = 0
-                    self._handle_checkpoint_passed(current_checkpoint)
-                else:
-                    self.steps_since_checkpoint += 1
-
-                car_pos = self.car.front
-                dist_to_cp = current_checkpoint.distance_to(
-                    car_pos.x, car_pos.y)
-
-                if self.prev_checkpoint_dist is None:
-                    self.prev_checkpoint_dist = dist_to_cp
-
-                progess_reward = self.prev_checkpoint_dist - dist_to_cp
-                self.prev_checkpoint_dist = dist_to_cp
-
-                progess_reward = max(min(progess_reward, 1.0), -1.0)
-
-                reward = self._compute_reward(state, action)
-
-                reward += progess_reward
-
-                if has_passed:
-                    reward += 100
-
-                next_state = self._get_state()
-                done = self.car.check_collisions(self.track.walls_grid)
-
-                episode_reward += reward
-
-                if done or self.steps_since_checkpoint == 1000:
-                    reward -= self.CRASH_PENALTY_BASE + abs(self.car.vel)
-                    self.running = False
-                    self.steps_since_checkpoint = 0
-
-                self.agent.store_experience(
-                    state, action, reward, next_state, done)
-
-                self.render(episode_reward)
-                if done or self.steps_since_checkpoint == 1000:
-                    self.handle_collision()
-
-                next_state = self._get_state()
-                state = next_state
-                steps += 1
-
-                shouldComputeNewEplison = steps == self.MAX_STEPS_PER_EPISODE or done or self.steps_since_checkpoint == 250
-                self.agent.learn(shouldComputeEplison=shouldComputeNewEplison)
-
-                self.clock.tick(60)  # now time penalty used elsewhere
-
-            print(
-                f"Episode {self.episode} | Total Reward: {episode_reward:.2f} | Steps: {steps}")
-
-            self.recent_rewards.append(episode_reward)
-            if len(self.recent_rewards) > self.TOP_N:
-                self.recent_rewards = self.recent_rewards[-self.RECENT_N:]
-
-            self.top_rewards.append(episode_reward)
-            self.top_rewards = sorted(self.top_rewards, reverse=True)[
-                :self.TOP_N]
-
-            avg_recent = sum(self.recent_rewards) / len(self.recent_rewards)
-            avg_top = sum(self.top_rewards) / len(self.top_rewards)
-
-            hybrid_avg = 0.60 * avg_recent + 0.40 * avg_top
-
-            if episode_reward < self.EPSILON_DROP_THRESHOLD * hybrid_avg and self.agent.epsilon < 0.7:
-                old_eps = self.agent.epsilon
-                self.agent.epsilon = min(max(
-                    self.RESET_EPSILON_VALUE, self.agent.epsilon + self.EPSILON_BUMP_RATE), 0.7)
-
-                print(
-                    f"[Epsilon Adjusted] Episode reward ({episode_reward:.2f}) < {self.EPSILON_DROP_THRESHOLD*100:.0f}% of hybrid average ({hybrid_avg:.2f}).")
-                print(
-                    f"  → Epsilon increased from {old_eps:.3f} → {self.agent.epsilon:.3f}")
-
-            if self.episode % self.SAVE_EVERY == 0:
-                self.save_model()
-
-            self.episode_log.log(
-                self.episode, f"{episode_reward:.2f}", steps, f"{self.agent.epsilon:.4f}")
-
-            if self.episode % 50 == 0 and len(self.agent.memory) >= 50:
-                sampled = random.sample(self.agent.memory, 50)
-                states = np.array([s[0] for s in sampled])
-
-                online_q = self.agent.predict_batch(
-                    self.agent.online_net, states)
-                target_q = self.agent.predict_batch(
-                    self.agent.target_net, states)
-                delta_q = np.abs(online_q - target_q)
-
-                mean_online_q = np.mean(online_q)
-                std_online_q = np.std(online_q)
-                mean_delta_q = np.mean(delta_q)
-                max_delta_q = np.max(delta_q)
-
-                self.q_value_log.log(
-                    self.episode, f"{mean_online_q:.4f}", f"{std_online_q:.4f}",
-                    f"{mean_delta_q:.4f}", f"{max_delta_q:.4f}")
-
-            self.episode += 1
+            episode_reward, steps, quit_requested = self._run_episode()
+            if quit_requested:
+                # The interrupted episode isn't logged; save so the next
+                # run resumes at this same (unfinished) episode number.
+                self.save_model(write_history=False)
+                break
+            self._finish_episode(episode_reward, steps)
 
         pygame.quit()
+
+    def _run_episode(self):
+        """Step the environment until the episode ends.
+
+        Returns (episode_reward, steps, quit_requested). Every way an episode
+        can end (crash, stall timeout, max steps) falls through to the single
+        _reset_game_state() call at the bottom, so the next episode always
+        starts from a clean reset.
+        """
+        state = self._get_state()
+        episode_reward = 0
+        steps = 0
+
+        while steps < self.MAX_STEPS_PER_EPISODE:
+            if self.handle_events():
+                return episode_reward, steps, True
+
+            action = self.agent.choose_action(state)
+            self._apply_action(action)
+
+            self.car.prev_front_center = Point(
+                self.car.right_center.x, self.car.right_center.y)
+            self.car.update()
+
+            current_checkpoint = self.checkpoints[self.current_checkpoint_index]
+            has_passed = self.car.check_checkpoint_collision(
+                current_checkpoint)
+            if has_passed:
+                self.steps_since_checkpoint = 0
+                self._handle_checkpoint_passed(current_checkpoint)
+            else:
+                self.steps_since_checkpoint += 1
+
+            car_pos = self.car.front
+            dist_to_cp = current_checkpoint.distance_to(
+                car_pos.x, car_pos.y)
+
+            if self.prev_checkpoint_dist is None:
+                self.prev_checkpoint_dist = dist_to_cp
+
+            progess_reward = self.prev_checkpoint_dist - dist_to_cp
+            self.prev_checkpoint_dist = dist_to_cp
+
+            progess_reward = max(min(progess_reward, 1.0), -1.0)
+
+            reward = self._compute_reward(state, action)
+
+            reward += progess_reward
+
+            if has_passed:
+                reward += 100
+
+            next_state = self._get_state()
+            crashed = self.car.check_collisions(self.track.walls_grid)
+            stalled = self.steps_since_checkpoint >= self.STALL_LIMIT
+            episode_over = crashed or stalled
+
+            # Terminal semantics (stall timeout penalised but stored as
+            # done=False) are tracked separately in issue #4.
+            if episode_over:
+                reward -= self.CRASH_PENALTY_BASE + abs(self.car.vel)
+
+            episode_reward += reward
+
+            self.agent.store_experience(
+                state, action, reward, next_state, crashed)
+
+            self.render(episode_reward)
+
+            state = next_state
+            steps += 1
+
+            shouldComputeNewEplison = steps == self.MAX_STEPS_PER_EPISODE or crashed or self.steps_since_checkpoint == 250
+            self.agent.learn(shouldComputeEplison=shouldComputeNewEplison)
+
+            self.clock.tick(60)  # now time penalty used elsewhere
+
+            if episode_over:
+                self.screen_flash()
+                break
+
+        # Single reset path for every way an episode can end.
+        self._reset_game_state()
+        return episode_reward, steps, False
+
+    def _finish_episode(self, episode_reward, steps):
+        """Bookkeeping for a completed episode: stats, logs, saving."""
+        print(
+            f"Episode {self.episode} | Total Reward: {episode_reward:.2f} | Steps: {steps}")
+
+        self.recent_rewards.append(episode_reward)
+        if len(self.recent_rewards) > self.TOP_N:
+            self.recent_rewards = self.recent_rewards[-self.RECENT_N:]
+
+        self.top_rewards.append(episode_reward)
+        self.top_rewards = sorted(self.top_rewards, reverse=True)[
+            :self.TOP_N]
+
+        avg_recent = sum(self.recent_rewards) / len(self.recent_rewards)
+        avg_top = sum(self.top_rewards) / len(self.top_rewards)
+
+        hybrid_avg = 0.60 * avg_recent + 0.40 * avg_top
+
+        if episode_reward < self.EPSILON_DROP_THRESHOLD * hybrid_avg and self.agent.epsilon < 0.7:
+            old_eps = self.agent.epsilon
+            self.agent.epsilon = min(max(
+                self.RESET_EPSILON_VALUE, self.agent.epsilon + self.EPSILON_BUMP_RATE), 0.7)
+
+            print(
+                f"[Epsilon Adjusted] Episode reward ({episode_reward:.2f}) < {self.EPSILON_DROP_THRESHOLD*100:.0f}% of hybrid average ({hybrid_avg:.2f}).")
+            print(
+                f"  → Epsilon increased from {old_eps:.3f} → {self.agent.epsilon:.3f}")
+
+        self.episode_log.log(
+            self.episode, f"{episode_reward:.2f}", steps, f"{self.agent.epsilon:.4f}")
+
+        if self.episode % 50 == 0 and len(self.agent.memory) >= 50:
+            sampled = random.sample(self.agent.memory, 50)
+            states = np.array([s[0] for s in sampled])
+
+            online_q = self.agent.predict_batch(
+                self.agent.online_net, states)
+            target_q = self.agent.predict_batch(
+                self.agent.target_net, states)
+            delta_q = np.abs(online_q - target_q)
+
+            mean_online_q = np.mean(online_q)
+            std_online_q = np.std(online_q)
+            mean_delta_q = np.mean(delta_q)
+            max_delta_q = np.max(delta_q)
+
+            self.q_value_log.log(
+                self.episode, f"{mean_online_q:.4f}", f"{std_online_q:.4f}",
+                f"{mean_delta_q:.4f}", f"{max_delta_q:.4f}")
+
+        completed_episode = self.episode
+        self.episode += 1
+
+        # Saved after incrementing so the checkpoint records the next episode
+        # to run, not the one just finished.
+        if completed_episode % self.SAVE_EVERY == 0:
+            self.save_model()
 
     def _angle_to_checkpoint(self):
         checkpoint = self.checkpoints[self.current_checkpoint_index]
@@ -204,6 +232,7 @@ class Game:
             cp.is_active = cp.is_passed = False
         self.checkpoints[0].is_active = True
         self.prev_checkpoint_dist = None
+        self.steps_since_checkpoint = 0
 
         self.consecutive_checkpoints = 0
         self.current_velocity = 0.0
@@ -213,9 +242,12 @@ class Game:
         return np.array(self.car.get_state() + [self.current_checkpoint_index / len(self.track.checkpoints)] + [self.steps_since_checkpoint / 250], dtype=np.float32)
 
     def handle_events(self):
+        """Pump the pygame event queue. Returns True if the window was closed."""
+        quit_requested = False
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                self.running = False
+                quit_requested = True
+        return quit_requested
 
     def _compute_reward(self, state, action):
         reward = 0
@@ -287,10 +319,6 @@ class Game:
         self.checkpoints[self.current_checkpoint_index].is_active = True
         self.prev_checkpoint_dist = None
 
-    def handle_collision(self):
-        self.screen_flash()
-        self._reset_game_state()
-
     def screen_flash(self):
         flash = pygame.Surface((self.width, self.height))
         flash.fill((255, 255, 255))
@@ -306,20 +334,26 @@ class Game:
         self._draw_speedometer()
         pygame.display.flip()
 
-    def save_model(self):
+    def save_model(self, write_history=True):
+        """Save a resumable checkpoint.
+
+        `next_episode` is the episode number training should resume at.
+        History files are named after the last completed episode.
+        """
         checkpoint = self.agent.export_state()
         checkpoint.update({
-            "episode": self.episode,
+            "next_episode": self.episode,
             "top_rewards": self.top_rewards,
             "recent_rewards": self.recent_rewards,
         })
 
         torch.save(checkpoint, self.CHECKPOINT_LATEST_PATH)
 
-        history_path = os.path.join(
-            self.CHECKPOINT_HISTORY_DIR, f"checkpoint_ep{self.episode:06d}.pt")
-        torch.save(checkpoint, history_path)
-        self._prune_history()
+        if write_history:
+            history_path = os.path.join(
+                self.CHECKPOINT_HISTORY_DIR, f"checkpoint_ep{self.episode - 1:06d}.pt")
+            torch.save(checkpoint, history_path)
+            self._prune_history()
 
     def _prune_history(self):
         checkpoints = sorted(glob.glob(os.path.join(
@@ -338,7 +372,11 @@ class Game:
             self.CHECKPOINT_LATEST_PATH, map_location=self.agent.device,
             weights_only=False)
         self.agent.import_state(checkpoint)
-        self.episode = checkpoint["episode"]
+        if "next_episode" in checkpoint:
+            self.episode = checkpoint["next_episode"]
+        else:
+            # Older checkpoints stored the last completed episode.
+            self.episode = checkpoint["episode"] + 1
         self.top_rewards = checkpoint["top_rewards"]
         self.recent_rewards = checkpoint["recent_rewards"]
 
