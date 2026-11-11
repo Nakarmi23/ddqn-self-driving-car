@@ -228,7 +228,7 @@ __all_checkpoints = (
 def get_track() -> Tuple[Tuple[int, int], int, Tuple[Wall, ...], SpatialGrid, Tuple[Checkpoint, ...]]:
     """Iron Serpent - Very Hard: narrow track with serpentine zigzags on two opposite edges."""
 
-    starting_position = (241, 474)  # behind checkpoint 0, clear of all checkpoints
+    starting_position = (253, 482)  # between the last checkpoint and checkpoint 0
     starting_rotation = 112
     grid = SpatialGrid(cell_size=80)
     for wall in __all_walls:

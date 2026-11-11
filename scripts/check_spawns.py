@@ -1,47 +1,51 @@
-"""Check that no track template spawns the car touching a checkpoint or wall.
+"""Check that every track template has a valid spawn (see game/game_spawn.py):
+between the last checkpoint and checkpoint 0, facing checkpoint 0, at least
+SPAWN_MARGIN px from every checkpoint and clear of walls. A spawn on a
+checkpoint counts the pass on step 1 without the car moving (issue #8).
 
-A spawn hitbox that overlaps a checkpoint counts it as passed on step 1 of
-every episode without the car moving (issue #8). Run from the repo root:
+    python -m scripts.check_spawns      # or: python scripts/check_spawns.py
 
-    python -m scripts.check_spawns
-
-Prints one row per template and exits with status 1 if any spawn overlaps.
+Prints one row per template and exits with status 1 if any spawn is bad.
 """
 import os
+import pkgutil
 import sys
 
 os.environ["SDL_VIDEODRIVER"] = "dummy"
 os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
 import pygame  # noqa: E402
 
+import game.track_templates  # noqa: E402
 from game.game_car import Car  # noqa: E402
+from game.game_spawn import hitbox_distance, spawn_problems  # noqa: E402
 from game.game_track import Track  # noqa: E402
-
-TEMPLATE_DIR = os.path.join("game", "track_templates")
 
 
 def template_names():
-    return sorted(f[:-3] for f in os.listdir(TEMPLATE_DIR)
-                  if f.startswith("template") and f.endswith(".py"))
+    return sorted(m.name for m in pkgutil.iter_modules(game.track_templates.__path__)
+                  if m.name.startswith("template"))
 
 
 def main():
     pygame.init()
     surface = pygame.display.set_mode((1000, 600))
     failed = False
-    print(f"{'Template':<10} {'Start':<12} {'Overlapping checkpoints':<24} "
-          f"{'Wall':<5} Total")
+    print(f"{'Template':<10} {'Start':<12} {'Checkpoint gap':<15} Problems")
     for name in template_names():
         track = Track(surface, name)
         car = Car(*track.starting_position, track, track.starting_rotation)
-        overlaps = car.overlapping_checkpoints()
-        wall = car.check_collisions(track.walls_grid)
-        failed |= bool(overlaps) or wall
+        problems = spawn_problems(car, track)
+        failed |= bool(problems)
+        gap = min(hitbox_distance(car, cp.x1, cp.y1, cp.x2, cp.y2)
+                  for cp in track.checkpoints)
         start = "({}, {})".format(*track.starting_position)
-        print(f"{name:<10} {start:<12} "
-              f"{', '.join(map(str, overlaps)) or 'none':<24} "
-              f"{'yes' if wall else 'no':<5} {len(track.checkpoints)}")
+        print(f"{name:<10} {start:<12} {gap:>6.1f} px      "
+              f"{'; '.join(problems) or 'none'}")
     pygame.quit()
     return 1 if failed else 0
 
