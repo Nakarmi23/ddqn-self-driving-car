@@ -57,7 +57,8 @@ class Game:
     TOP_N = 20
     RECENT_N = 50
     # Training budget in learning steps (agent.step_count). Stopping on it
-    # is tracked in issue #10; for now it only sets the epsilon schedule.
+    # is tracked in issue #10; for now it only sets the epsilon and PER beta
+    # schedules.
     TOTAL_TRAIN_STEPS = 1_000_000
     # Fraction of the budget over which epsilon decays linearly 1.0 -> min.
     EPSILON_DECAY_FRACTION = 0.4
@@ -96,7 +97,8 @@ class Game:
         self._reset_game_state()
         self.agent = DDQNAgent(
             len(self.car.get_state()) + 2, 9,
-            epsilon_decay_steps=int(self.TOTAL_TRAIN_STEPS * self.EPSILON_DECAY_FRACTION))
+            epsilon_decay_steps=int(self.TOTAL_TRAIN_STEPS * self.EPSILON_DECAY_FRACTION),
+            beta_anneal_steps=self.TOTAL_TRAIN_STEPS)
 
         # Create directory if it doesn't exist
         os.makedirs("logs", exist_ok=True)
