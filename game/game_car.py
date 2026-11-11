@@ -337,6 +337,11 @@ class Car:
 
         return False
 
+    def overlapping_checkpoints(self):
+        """Indices of the track checkpoints the hitbox currently touches."""
+        return [i for i, cp in enumerate(self.checkpoints)
+                if self.check_checkpoint_collision(cp)]
+
     def _check_checkpoint_intersection(self, p1: Point, p2: Point, checkpoint: Checkpoint):
         x1, y1 = checkpoint.x1, checkpoint.y1
         x2, y2 = checkpoint.x2, checkpoint.y2

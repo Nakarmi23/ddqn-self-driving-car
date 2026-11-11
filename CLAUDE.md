@@ -15,7 +15,7 @@ python main.py
 # HEADLESS=1 (no window, no frame cap) or RENDER_EVERY=N (draw every Nth step, no cap) for fast training
 ```
 
-There are no lint/test/build commands configured in this repo (no pytest, no linter config). Training progress prints to stdout per step/episode, including a `[DDQNAgent] Using device: ...` line at startup showing whether it's running on CUDA, MPS, or CPU — see README for installing a GPU-enabled `torch` build per platform.
+There are no lint/test/build commands configured in this repo (no pytest, no linter config). The one check is `python -m scripts.check_spawns`, which exits 1 if any track template spawns the car touching a checkpoint or wall. Training progress prints to stdout per step/episode, including a `[DDQNAgent] Using device: ...` line at startup showing whether it's running on CUDA, MPS, or CPU — see README for installing a GPU-enabled `torch` build per platform.
 
 ## Architecture
 
@@ -28,7 +28,7 @@ There are no lint/test/build commands configured in this repo (no pytest, no lin
 - `game_track.py` (`Track`) — thin wrapper that loads a track definition from `game/track_templates/` and renders it.
 - `game_grid.py` (`SpatialGrid`) — spatial partitioning so collision checks only test nearby walls, not the whole wall list.
 - `game_checkpoint.py`, `game_wall.py`, `game_point.py`, `game_intersection.py` — small geometry/data classes used by the above.
-- `game/track_templates/template1.py` — the actual track layout (walls, checkpoints, starting position/rotation). Add new tracks here.
+- `game/track_templates/template*.py` — track layouts (walls, checkpoints, starting position/rotation); `TRACK_TEMPLATE` picks one, default `template5`. Add new tracks here. Checkpoint 0 is the start/finish line, and the spawn must sit behind it with the hitbox clear of every checkpoint, or the pass counts on step 1 without the car moving (#8). `Game._check_spawn()` raises at startup if it doesn't; run `python -m scripts.check_spawns` after adding or editing a track.
 
 **RL state vector** = `Car.get_state()` (rays + velocity + traction + drift angle) + `[current_checkpoint_index / num_checkpoints]` + `[min(steps_since_checkpoint / STALL_LIMIT, 1.0)]`, assembled in `Game._get_state()`. If you change the ray count or append/remove features in either `Car.get_state()` or `Game._get_state()`, the two must stay in sync since `DDQNAgent`'s input layer size is derived from `len(car.get_state()) + 2` at construction time in `Game.__init__`.
 
