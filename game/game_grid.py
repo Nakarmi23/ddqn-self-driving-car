@@ -70,6 +70,17 @@ class SpatialGrid:
                 wall.extend(self.grid[cell])
         return wall
 
+    def get_walls_in_rect(self, min_x, min_y, max_x, max_y):
+        """Unique walls registered in any cell overlapping the rectangle."""
+        cx0, cy0 = self.__get_cell(min_x, min_y)
+        cx1, cy1 = self.__get_cell(max_x, max_y)
+        walls = {}
+        for cx in range(cx0, cx1 + 1):
+            for cy in range(cy0, cy1 + 1):
+                for wall in self.grid.get((cx, cy), ()):
+                    walls[id(wall)] = wall
+        return list(walls.values())
+
     def draw(self, surface, color=(50, 50, 50)):
         for cell in self.grid:
             x = cell[0] * self.cell_size

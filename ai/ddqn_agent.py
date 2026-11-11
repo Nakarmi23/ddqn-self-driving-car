@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+from ai.replay_buffer import PrioritizedReplayBuffer
 from utils.csv_logger import CsvLogger
 
 
@@ -28,13 +29,16 @@ class QNetwork(nn.Module):
 
 
 class DDQNAgent:
+    MEMORY_CAPACITY = 10_000
+    LOG_EVERY = 1000  # learning steps between stdout progress lines
+
     def __init__(self, state_size, action_size, epsilon_decay_steps=400_000):
         self.state_size = state_size
         self.action_size = action_size
-        self.memory = []
-        self.priorities = []
         self.priority_alpha = 0.6
         self.priority_beta = 0.4
+        self.memory = PrioritizedReplayBuffer(
+            self.MEMORY_CAPACITY, state_size, alpha=self.priority_alpha)
 
         self.gamma = 0.99
         # Linear schedule: epsilon_start -> epsilon_min over
@@ -61,8 +65,11 @@ class DDQNAgent:
             self.online_net.parameters(), lr=5e-5)
         self.huber_loss = nn.HuberLoss(reduction='none')
 
+        # One row per learning step, so buffer writes instead of flushing
+        # every row.
         self.training_log = CsvLogger(
-            "logs/training_metrics.csv", ["step", "loss", "avg_td_error"])
+            "logs/training_metrics.csv", ["step", "loss", "avg_td_error"],
+            flush_every=1000)
 
         self._update_target_network(hard_copy=True)
 
@@ -84,13 +91,7 @@ class DDQNAgent:
         return self.epsilon_start + progress * (self.epsilon_min - self.epsilon_start)
 
     def store_experience(self, state, action, reward, next_state, done):
-        max_priorities = max(self.priorities, default=1.0)
-        self.memory.append((state, action, reward, next_state, done))
-        self.priorities.append(max_priorities)
-
-        if len(self.memory) > 10000:
-            self.memory.pop(0)
-            self.priorities.pop(0)
+        self.memory.add(state, action, reward, next_state, done)
 
     def choose_action(self, state):
         if np.random.rand() <= self.epsilon:
@@ -105,15 +106,9 @@ class DDQNAgent:
         if len(self.memory) < self.batch_size:
             return
 
-        probs = np.array(self.priorities) ** self.priority_alpha
-        probs /= probs.sum()
-
-        indices = np.random.choice(len(self.memory), self.batch_size, p=probs)
-        minibatch = [self.memory[i] for i in indices]
-
-        # --- Extract tensors from minibatch ---
-        states, actions, rewards, next_states, dones = map(
-            np.array, zip(*minibatch))
+        indices, probs = self.memory.sample(self.batch_size)
+        states, actions, rewards, next_states, dones = self.memory.batch(
+            indices)
 
         states_t = torch.as_tensor(
             states, dtype=torch.float32, device=self.device)
@@ -144,7 +139,7 @@ class DDQNAgent:
         avg_td_error = np.mean(np.abs(td_errors))
 
         total = len(self.memory)
-        weights = (total * probs[indices]) ** (-self.priority_beta)
+        weights = (total * probs) ** (-self.priority_beta)
         weights /= weights.max()
         weights_t = torch.as_tensor(
             weights, dtype=torch.float32, device=self.device)
@@ -152,8 +147,9 @@ class DDQNAgent:
         elementwise_loss = self.huber_loss(current_q, target_q)
         loss = (elementwise_loss * weights_t).mean()
 
+        loss_value = loss.item()
         self.training_log.log(
-            self.step_count, f"{loss.item():.4f}", f"{avg_td_error:.4f}")
+            self.step_count, f"{loss_value:.4f}", f"{avg_td_error:.4f}")
 
         self.optimizer.zero_grad()
         loss.backward()
@@ -162,15 +158,16 @@ class DDQNAgent:
         self.optimizer.step()
 
         self.step_count += 1
-        for i, error in zip(indices, td_errors):
-            self.priorities[i] = abs(error) + self.epsilon_priority
+        self.memory.update_priorities(
+            indices, np.abs(td_errors) + self.epsilon_priority)
 
         self._update_target_network(hard_copy=False)
 
         self.epsilon = self.scheduled_epsilon()
 
-        print(
-            f"[Step {self.step_count}] Loss: {loss.item():.4f}, Epsilon: {self.epsilon:.4f}")
+        if self.step_count % self.LOG_EVERY == 0:
+            print(
+                f"[Step {self.step_count}] Loss: {loss_value:.4f}, Epsilon: {self.epsilon:.4f}")
 
     def predict_batch(self, net, states):
         states_t = torch.as_tensor(
@@ -186,8 +183,7 @@ class DDQNAgent:
             "target_state_dict": self.target_net.state_dict(),
             "epsilon": self.epsilon,
             "step_count": self.step_count,
-            "memory": list(self.memory)[-50_000:],
-            "priorities": list(self.priorities)[-50_000:],
+            "replay_buffer": self.memory.export_state(),
         }
 
     def import_state(self, data):
@@ -197,5 +193,11 @@ class DDQNAgent:
         # The saved "epsilon" is ignored: it's recomputed from step_count so
         # a changed schedule (or an old checkpoint) can't leave it stale.
         self.epsilon = self.scheduled_epsilon()
-        self.memory = data["memory"]
-        self.priorities = data["priorities"]
+        if "replay_buffer" in data:
+            buffer_state = data["replay_buffer"]
+        else:
+            # Older checkpoints stored a list of transition tuples.
+            buffer_state = PrioritizedReplayBuffer.from_transition_list(
+                data.get("memory", []), data.get("priorities", []))
+        if buffer_state is not None:
+            self.memory.import_state(buffer_state)

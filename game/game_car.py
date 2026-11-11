@@ -157,27 +157,41 @@ class Car:
         self.closest_rays = []
         self.closest_ray_distances = []
 
+        visual_angle = self.angle - math.pi/2
+        rays = []
         for origin, angle_offset, length in ray_definition:
+            ray_angle = visual_angle + math.radians(angle_offset)
+            # Negative dy for pygame's Y axis
+            end = Point(origin.x + math.sin(ray_angle) * length,
+                        origin.y - math.cos(ray_angle) * length)
+            rays.append((origin, end, length))
+
+        # Broad phase: only walls in grid cells overlapping the bounding box
+        # of all rays. Padded by a few pixels because walls are registered in
+        # cells by a pixel-stepped line walk, which can miss a cell the true
+        # line only grazes.
+        pad = 2
+        xs = [c for o, e, _ in rays for c in (o.x, e.x)]
+        ys = [c for o, e, _ in rays for c in (o.y, e.y)]
+        walls = self.grid.get_walls_in_rect(
+            min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad)
+
+        for origin, end, length in rays:
             end_point, distance = self._calculate_ray_end(
-                origin, angle_offset, length)
+                origin, end, length, walls)
             self.closest_ray_distances.append((distance, length))
 
             self.closest_rays.append(
                 (origin.x, origin.y, end_point.x, end_point.y))
 
-    def _calculate_ray_end(self, origin, angle_offset, length):
-        """Calculate ray end point with visual angle compensation"""
-        visual_angle = self.angle - math.pi/2
-        ray_angle = visual_angle + math.radians(angle_offset)
-        dx = math.sin(ray_angle) * length
-        # Negative for pygame's Y axis
-        dy = -math.cos(ray_angle) * length
-        collision_point = Point(origin.x + dx, origin.y + dy)
+    def _calculate_ray_end(self, origin, end, length, walls):
+        """Closest wall hit along origin->end, or end if none."""
+        collision_point = end
         closest_distance = length
 
-        for wall in self.walls:
+        for wall in walls:
             intersect = self._ray_wall_intersection(
-                origin, collision_point, wall)
+                origin, end, wall)
             if intersect and intersect.distance < closest_distance:
                 closest_distance = intersect.distance
                 collision_point = intersect.point
