@@ -94,6 +94,11 @@ class PrioritizedReplayBuffer:
     def update_priorities(self, indices, priorities):
         indices = np.asarray(indices)
         priorities = np.asarray(priorities, dtype=np.float64)
+        # A NaN/inf priority would poison the sum tree and make sample()
+        # silently return leaf 0 forever, so fail loudly instead.
+        if not np.all(np.isfinite(priorities)):
+            raise ValueError(
+                f"Non-finite replay priorities (diverged TD error): {priorities}")
         self.priorities[indices] = priorities
         nodes = indices + self._leaf_base
         self._sum_tree[nodes] = priorities ** self.alpha

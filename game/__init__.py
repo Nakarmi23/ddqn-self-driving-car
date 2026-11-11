@@ -11,6 +11,30 @@ import glob
 import os
 
 
+def _env_flag(name):
+    """Boolean env var: 1/true/yes/on (any case) is true; unset, empty or
+    0/false/no/off is false; anything else is an error."""
+    value = os.environ.get(name, "").strip().lower()
+    if value in ("", "0", "false", "no", "off"):
+        return False
+    if value in ("1", "true", "yes", "on"):
+        return True
+    raise SystemExit(f"{name}={os.environ[name]!r}: expected 1/0, true/false, yes/no or on/off")
+
+
+def _env_positive_int(name, default):
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return default
+    try:
+        number = int(value)
+    except ValueError:
+        number = 0
+    if number < 1:
+        raise SystemExit(f"{name}={os.environ[name]!r}: expected a positive integer")
+    return number
+
+
 class Game:
     # Reward scale, see docs/adr/0001-progress-led-reward.md.
     CRASH_PENALTY_BASE = 50
@@ -44,10 +68,12 @@ class Game:
         # - default: draw every step, capped at FPS_CAP (watchable).
         # - RENDER_EVERY=N (N > 1): draw every Nth step, no frame cap.
         # - HEADLESS=1: no window, never draw, no frame cap. Fastest.
-        self.headless = os.environ.get("HEADLESS", "0") not in ("", "0")
-        self.render_every = max(1, int(os.environ.get("RENDER_EVERY", "1")))
+        self.headless = _env_flag("HEADLESS")
+        self.render_every = _env_positive_int("RENDER_EVERY", 1)
         if self.headless:
-            os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+            # Override, not setdefault: a pre-set real driver would still
+            # open a (never drawn, unresponsive) window.
+            os.environ["SDL_VIDEODRIVER"] = "dummy"
         self.frame_cap = (None if self.headless or self.render_every > 1
                           else self.FPS_CAP)
         self.total_steps = 0  # environment steps this process, for render_every
@@ -87,19 +113,36 @@ class Game:
     def _should_render(self):
         return not self.headless and self.total_steps % self.render_every == 0
 
-    def run(self):
-        while True:
-            episode_reward, steps, quit_requested = self._run_episode()
-            if quit_requested:
-                # The interrupted episode isn't logged; save so the next
-                # run resumes at this same (unfinished) episode number.
-                self.save_model(write_history=False)
-                break
-            self._finish_episode(episode_reward, steps)
+    def _logs(self):
+        return (self.episode_log, self.q_value_log, self.agent.training_log)
 
-        for log in (self.episode_log, self.q_value_log, self.agent.training_log):
+    def run(self):
+        try:
+            while True:
+                episode_reward, steps, quit_requested = self._run_episode()
+                if quit_requested:
+                    break
+                self._finish_episode(episode_reward, steps)
+        except KeyboardInterrupt:
+            # Ctrl+C (how headless runs are stopped) is handled like closing
+            # the window. save_model writes atomically, so an interrupt that
+            # lands mid-save still leaves the previous checkpoint intact.
+            print("\nInterrupted, saving checkpoint...")
+
+        # The interrupted episode isn't logged; save so the next run resumes
+        # at this same (unfinished) episode number.
+        self.save_model(write_history=False)
+        for log in self._logs():
             log.close()
         pygame.quit()
+
+    @staticmethod
+    def _atomic_torch_save(obj, path):
+        """Write to a temp file then rename over `path`, so an interrupt or
+        crash mid-write never leaves a truncated checkpoint behind."""
+        tmp_path = path + ".tmp"
+        torch.save(obj, tmp_path)
+        os.replace(tmp_path, path)
 
     def _run_episode(self):
         """Step the environment until the episode ends.
@@ -377,15 +420,15 @@ class Game:
             "recent_rewards": self.recent_rewards,
         })
 
-        torch.save(checkpoint, self.CHECKPOINT_LATEST_PATH)
+        self._atomic_torch_save(checkpoint, self.CHECKPOINT_LATEST_PATH)
         # Keep the CSV logs on disk in step with the checkpoint.
-        for log in (self.episode_log, self.q_value_log, self.agent.training_log):
+        for log in self._logs():
             log.flush()
 
         if write_history:
             history_path = os.path.join(
                 self.CHECKPOINT_HISTORY_DIR, f"checkpoint_ep{self.episode - 1:06d}.pt")
-            torch.save(checkpoint, history_path)
+            self._atomic_torch_save(checkpoint, history_path)
             self._prune_history()
 
     def _prune_history(self):
