@@ -29,14 +29,24 @@ class QNetwork(nn.Module):
 
 
 class DDQNAgent:
-    MEMORY_CAPACITY = 10_000
+    MEMORY_CAPACITY = 100_000
+    # Transitions to collect (at epsilon 1.0) before the first learning step,
+    # so early updates don't overfit a handful of correlated transitions.
+    WARMUP_TRANSITIONS = 5_000
+    # Soft (Polyak) target update rate, applied after every learning step.
+    TARGET_TAU = 0.01
     LOG_EVERY = 1000  # learning steps between stdout progress lines
 
-    def __init__(self, state_size, action_size, epsilon_decay_steps=400_000):
+    def __init__(self, state_size, action_size, epsilon_decay_steps=400_000,
+                 beta_anneal_steps=1_000_000):
         self.state_size = state_size
         self.action_size = action_size
         self.priority_alpha = 0.6
-        self.priority_beta = 0.4
+        # PER importance-sampling exponent, annealed linearly
+        # priority_beta_start -> 1.0 over beta_anneal_steps learning steps
+        # (Schaul et al. 2015), so the bias correction is full by the end.
+        self.priority_beta_start = 0.4
+        self.beta_anneal_steps = beta_anneal_steps
         self.memory = PrioritizedReplayBuffer(
             self.MEMORY_CAPACITY, state_size, alpha=self.priority_alpha)
 
@@ -50,11 +60,10 @@ class DDQNAgent:
         self.epsilon_priority = 1e-6
 
         self.batch_size = 128
-        self.update_target_every = 1000
 
-        self.epos = 1
         self.step_count = 0
         self.epsilon = self.scheduled_epsilon()
+        self.priority_beta = self.scheduled_beta()
 
         self.device = get_device()
         print(f"[DDQNAgent] Using device: {self.device}")
@@ -73,7 +82,7 @@ class DDQNAgent:
 
         self._update_target_network(hard_copy=True)
 
-    def _update_target_network(self, hard_copy=True, tau=0.01):
+    def _update_target_network(self, hard_copy=True, tau=TARGET_TAU):
         if hard_copy:
             self.target_net.load_state_dict(self.online_net.state_dict())
         else:
@@ -90,6 +99,11 @@ class DDQNAgent:
         progress = min(self.step_count / self.epsilon_decay_steps, 1.0)
         return self.epsilon_start + progress * (self.epsilon_min - self.epsilon_start)
 
+    def scheduled_beta(self):
+        """PER beta for the current step_count: linear to 1.0, then held."""
+        progress = min(self.step_count / self.beta_anneal_steps, 1.0)
+        return self.priority_beta_start + progress * (1.0 - self.priority_beta_start)
+
     def store_experience(self, state, action, reward, next_state, done):
         self.memory.add(state, action, reward, next_state, done)
 
@@ -103,7 +117,7 @@ class DDQNAgent:
         return int(torch.argmax(q_values[0]).item())
 
     def learn(self):
-        if len(self.memory) < self.batch_size:
+        if len(self.memory) < max(self.batch_size, self.WARMUP_TRANSITIONS):
             return
 
         indices, probs = self.memory.sample(self.batch_size)
@@ -134,8 +148,6 @@ class DDQNAgent:
         current_q = q_values.gather(1, actions_t.unsqueeze(1)).squeeze(1)
 
         td_errors = (target_q - current_q).detach().cpu().numpy()
-        self.last_td_erros = td_errors
-
         avg_td_error = np.mean(np.abs(td_errors))
 
         total = len(self.memory)
@@ -164,10 +176,12 @@ class DDQNAgent:
         self._update_target_network(hard_copy=False)
 
         self.epsilon = self.scheduled_epsilon()
+        self.priority_beta = self.scheduled_beta()
 
         if self.step_count % self.LOG_EVERY == 0:
             print(
-                f"[Step {self.step_count}] Loss: {loss_value:.4f}, Epsilon: {self.epsilon:.4f}")
+                f"[Step {self.step_count}] Loss: {loss_value:.4f}, "
+                f"Epsilon: {self.epsilon:.4f}, Beta: {self.priority_beta:.3f}")
 
     def predict_batch(self, net, states):
         states_t = torch.as_tensor(
@@ -193,6 +207,7 @@ class DDQNAgent:
         # The saved "epsilon" is ignored: it's recomputed from step_count so
         # a changed schedule (or an old checkpoint) can't leave it stale.
         self.epsilon = self.scheduled_epsilon()
+        self.priority_beta = self.scheduled_beta()
         if "replay_buffer" in data:
             buffer_state = data["replay_buffer"]
         else:
