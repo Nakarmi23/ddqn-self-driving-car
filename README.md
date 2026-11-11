@@ -99,6 +99,8 @@ In headless mode there is no window to close, so stop with Ctrl+C. Training resu
 │   ├── game_wall.py      # Wall implementation
 │   └── track_templates/  # Track layouts
 ├── main.py              # Main game loop
+├── scripts/
+│   └── check_spawns.py   # Checks no track spawns the car on a checkpoint
 └── requirements.txt     # Project dependencies
 ```
 

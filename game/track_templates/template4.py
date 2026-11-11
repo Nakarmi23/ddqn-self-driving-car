@@ -202,7 +202,7 @@ __all_checkpoints = (
 def get_track() -> Tuple[Tuple[int, int], int, Tuple[Wall, ...], SpatialGrid, Tuple[Checkpoint, ...]]:
     """Switchback Pass - Hard: narrow track with repeated hairpins."""
 
-    starting_position = (184, 483)
+    starting_position = (218, 478)  # behind checkpoint 0, clear of all checkpoints
     starting_rotation = 82
     grid = SpatialGrid(cell_size=80)
     for wall in __all_walls:

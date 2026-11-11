@@ -95,6 +95,7 @@ class Game:
                        self.track, self.track.starting_rotation)
 
         self._reset_game_state()
+        self._check_spawn()
         self.agent = DDQNAgent(
             len(self.car.get_state()) + 2, 9,
             epsilon_decay_steps=int(self.TOTAL_TRAIN_STEPS * self.EPSILON_DECAY_FRACTION),
@@ -301,6 +302,19 @@ class Game:
         dy = checkpoint.center.y - self.car.front.y
         desired = math.atan2(dy, dx)
         return (desired - heading + math.pi) % (2 * math.pi) - math.pi
+
+    def _check_spawn(self):
+        """Refuse a track whose spawn hitbox already touches a checkpoint
+        or wall: the pass would be counted on step 1 without the car moving
+        (issue #8). `python -m scripts.check_spawns` checks every template."""
+        overlaps = self.car.overlapping_checkpoints()
+        if overlaps:
+            raise ValueError(
+                f"Spawn {self.track.starting_position} overlaps checkpoint(s) "
+                f"{overlaps}; move starting_position back behind checkpoint 0.")
+        if self.car.check_collisions(self.track.walls_grid):
+            raise ValueError(
+                f"Spawn {self.track.starting_position} overlaps a wall.")
 
     def _reset_game_state(self):
         self.car = Car(*self.track.starting_position,
