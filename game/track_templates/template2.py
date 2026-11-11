@@ -176,7 +176,7 @@ __all_checkpoints = (
 def get_track() -> Tuple[Tuple[int, int], int, Tuple[Wall, ...], SpatialGrid, Tuple[Checkpoint, ...]]:
     """Thunder Ridge - Hard: fast straights broken by a deep top hairpin and a right-side chicane."""
 
-    starting_position = (210, 481)  # behind checkpoint 0, clear of all checkpoints
+    starting_position = (218, 475)  # between the last checkpoint and checkpoint 0
     starting_rotation = 93
     grid = SpatialGrid(cell_size=80)
     for wall in __all_walls:

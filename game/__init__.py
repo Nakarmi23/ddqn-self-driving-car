@@ -1,5 +1,6 @@
 from .game_track import Track
 from .game_car import Car
+from .game_spawn import spawn_problems
 from .game_point import Point
 import pygame
 import math
@@ -89,11 +90,8 @@ class Game:
         self.top_rewards = [0]
         self.recent_rewards = [0]
 
-        self.track = Track(self.surface, os.environ.get(
-            "TRACK_TEMPLATE", "template5"))
-        self.car = Car(*self.track.starting_position,
-                       self.track, self.track.starting_rotation)
-
+        self.track_name = os.environ.get("TRACK_TEMPLATE", "template5")
+        self.track = Track(self.surface, self.track_name)
         self._reset_game_state()
         self._check_spawn()
         self.agent = DDQNAgent(
@@ -304,17 +302,15 @@ class Game:
         return (desired - heading + math.pi) % (2 * math.pi) - math.pi
 
     def _check_spawn(self):
-        """Refuse a track whose spawn hitbox already touches a checkpoint
-        or wall: the pass would be counted on step 1 without the car moving
-        (issue #8). `python -m scripts.check_spawns` checks every template."""
-        overlaps = self.car.overlapping_checkpoints()
-        if overlaps:
+        """Refuse a track whose spawn is not a clean start: on or near a
+        checkpoint (the pass would count on step 1 without the car moving,
+        issue #8), not facing checkpoint 0 from the last lap segment, or
+        touching a wall. `python -m scripts.check_spawns` checks every template."""
+        problems = spawn_problems(self.car, self.track)
+        if problems:
             raise ValueError(
-                f"Spawn {self.track.starting_position} overlaps checkpoint(s) "
-                f"{overlaps}; move starting_position back behind checkpoint 0.")
-        if self.car.check_collisions(self.track.walls_grid):
-            raise ValueError(
-                f"Spawn {self.track.starting_position} overlaps a wall.")
+                f"Bad spawn {self.track.starting_position} on track "
+                f"{self.track_name}: " + "; ".join(problems))
 
     def _reset_game_state(self):
         self.car = Car(*self.track.starting_position,

@@ -1,3 +1,4 @@
+import os
 import pygame
 import math
 import numpy as np
@@ -40,7 +41,7 @@ class Car:
 
         # Image handling
         self.original_image = pygame.image.load(
-            "./game/assets/car.png")
+            os.path.join(os.path.dirname(__file__), "assets", "car.png"))
         self.original_image = pygame.transform.flip(
             self.original_image, True, False)
         self.image = pygame.transform.rotate(
@@ -336,11 +337,6 @@ class Car:
                 return True
 
         return False
-
-    def overlapping_checkpoints(self):
-        """Indices of the track checkpoints the hitbox currently touches."""
-        return [i for i, cp in enumerate(self.checkpoints)
-                if self.check_checkpoint_collision(cp)]
 
     def _check_checkpoint_intersection(self, p1: Point, p2: Point, checkpoint: Checkpoint):
         x1, y1 = checkpoint.x1, checkpoint.y1
