@@ -59,6 +59,21 @@ at startup (CUDA > MPS > CPU) — no code changes needed either way.
 python main.py
 ```
 
+By default the window draws every step at 60 FPS so you can watch. To train faster, set one of these environment variables:
+
+| Variable | Effect | Throughput (CUDA, template5) |
+|---|---|---|
+| _(none)_ | Draw every step, capped at 60 FPS | ~60 steps/s |
+| `RENDER_EVERY=10` | Draw every 10th step, no frame cap | ~390 steps/s |
+| `HEADLESS=1` | No window, no drawing, no frame cap | ~435 steps/s |
+
+```bash
+HEADLESS=1 python main.py           # bash
+$env:HEADLESS=1; python main.py     # PowerShell
+```
+
+In headless mode there is no window to close, so stop with Ctrl+C. Training resumes from the last checkpoint (saved every 10 episodes), so anything since then is lost.
+
 ### Game Features
 
 - **Scoring System**: Earn points by passing checkpoints

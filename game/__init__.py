@@ -9,7 +9,6 @@ from ai.ddqn_agent import DDQNAgent
 from utils.csv_logger import CsvLogger
 import glob
 import os
-import random
 
 
 class Game:
@@ -38,8 +37,21 @@ class Game:
     TOTAL_TRAIN_STEPS = 1_000_000
     # Fraction of the budget over which epsilon decays linearly 1.0 -> min.
     EPSILON_DECAY_FRACTION = 0.4
+    FPS_CAP = 60  # only applied when drawing every step (watch mode)
 
     def __init__(self):
+        # Display modes, from env vars:
+        # - default: draw every step, capped at FPS_CAP (watchable).
+        # - RENDER_EVERY=N (N > 1): draw every Nth step, no frame cap.
+        # - HEADLESS=1: no window, never draw, no frame cap. Fastest.
+        self.headless = os.environ.get("HEADLESS", "0") not in ("", "0")
+        self.render_every = max(1, int(os.environ.get("RENDER_EVERY", "1")))
+        if self.headless:
+            os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        self.frame_cap = (None if self.headless or self.render_every > 1
+                          else self.FPS_CAP)
+        self.total_steps = 0  # environment steps this process, for render_every
+
         pygame.init()
         self.width, self.height = 1000, 600
         self.surface = pygame.display.set_mode((self.width, self.height))
@@ -72,6 +84,9 @@ class Game:
 
         self.load_model()
 
+    def _should_render(self):
+        return not self.headless and self.total_steps % self.render_every == 0
+
     def run(self):
         while True:
             episode_reward, steps, quit_requested = self._run_episode()
@@ -82,6 +97,8 @@ class Game:
                 break
             self._finish_episode(episode_reward, steps)
 
+        for log in (self.episode_log, self.q_value_log, self.agent.training_log):
+            log.close()
         pygame.quit()
 
     def _run_episode(self):
@@ -159,17 +176,22 @@ class Game:
             self.agent.store_experience(
                 state, action, reward, next_state, episode_over)
 
-            self.render(episode_reward)
+            rendering = self._should_render()
+            if rendering:
+                self.render(episode_reward)
 
             state = next_state
             steps += 1
+            self.total_steps += 1
 
             self.agent.learn()
 
-            self.clock.tick(60)  # now time penalty used elsewhere
+            if self.frame_cap:
+                self.clock.tick(self.frame_cap)
 
             if episode_over:
-                self.screen_flash()
+                if rendering:
+                    self.screen_flash()
                 break
 
         # Single reset path for every way an episode can end.
@@ -193,8 +215,9 @@ class Game:
             self.episode, f"{episode_reward:.2f}", steps, f"{self.agent.epsilon:.4f}")
 
         if self.episode % 50 == 0 and len(self.agent.memory) >= 50:
-            sampled = random.sample(self.agent.memory, 50)
-            states = np.array([s[0] for s in sampled])
+            sample = np.random.choice(
+                len(self.agent.memory), 50, replace=False)
+            states = self.agent.memory.states[sample]
 
             online_q = self.agent.predict_batch(
                 self.agent.online_net, states)
@@ -293,7 +316,6 @@ class Game:
 
     def _apply_action(self, action):
         if action == 0:
-            print("No action")
             return
         mapping = {
             1: (self.car.accelerate, 1),
@@ -356,6 +378,9 @@ class Game:
         })
 
         torch.save(checkpoint, self.CHECKPOINT_LATEST_PATH)
+        # Keep the CSV logs on disk in step with the checkpoint.
+        for log in (self.episode_log, self.q_value_log, self.agent.training_log):
+            log.flush()
 
         if write_history:
             history_path = os.path.join(
