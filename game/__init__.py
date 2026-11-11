@@ -415,22 +415,28 @@ class Game:
         `next_episode` is the episode number training should resume at.
         History files are named after the last completed episode.
         """
-        checkpoint = self.agent.export_state()
-        checkpoint.update({
+        run_state = {
             "next_episode": self.episode,
             "top_rewards": self.top_rewards,
             "recent_rewards": self.recent_rewards,
-        })
+        }
 
+        checkpoint = self.agent.export_state()
+        checkpoint.update(run_state)
         self._atomic_torch_save(checkpoint, self.CHECKPOINT_LATEST_PATH)
         # Keep the CSV logs on disk in step with the checkpoint.
         for log in self._logs():
             log.flush()
 
         if write_history:
+            # History is a rollback point for the weights and counters; the
+            # replay buffer (~16 MB at 100k) is only kept in the latest
+            # checkpoint; restoring a history file refills it via warm-up.
+            history = self.agent.export_state(include_buffer=False)
+            history.update(run_state)
             history_path = os.path.join(
                 self.CHECKPOINT_HISTORY_DIR, f"checkpoint_ep{self.episode - 1:06d}.pt")
-            self._atomic_torch_save(checkpoint, history_path)
+            self._atomic_torch_save(history, history_path)
             self._prune_history()
 
     def _prune_history(self):

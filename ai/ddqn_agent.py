@@ -60,6 +60,8 @@ class DDQNAgent:
         self.epsilon_priority = 1e-6
 
         self.batch_size = 128
+        assert self.WARMUP_TRANSITIONS >= self.batch_size, \
+            "warm-up must collect at least one batch before learning"
 
         self.step_count = 0
         self.epsilon = self.scheduled_epsilon()
@@ -82,33 +84,47 @@ class DDQNAgent:
 
         self._update_target_network(hard_copy=True)
 
-    def _update_target_network(self, hard_copy=True, tau=TARGET_TAU):
+    def _update_target_network(self, hard_copy=True, tau=None):
         if hard_copy:
             self.target_net.load_state_dict(self.online_net.state_dict())
-        else:
-            online_state = self.online_net.state_dict()
-            target_state = self.target_net.state_dict()
-            new_state = {
-                k: tau * online_state[k] + (1 - tau) * target_state[k]
-                for k in online_state
-            }
-            self.target_net.load_state_dict(new_state)
+            return
+        if tau is None:
+            tau = self.TARGET_TAU
+        # In place: target <- target + tau * (online - target). Parameters
+        # only; QNetwork has no buffers (e.g. batch-norm stats) to blend.
+        with torch.no_grad():
+            torch._foreach_lerp_(
+                list(self.target_net.parameters()),
+                list(self.online_net.parameters()), tau)
+
+    def _linear_schedule(self, start, end, steps):
+        """Value at step_count of a linear start -> end ramp over `steps`
+        learning steps, held at `end` afterwards (steps <= 0: always end)."""
+        if steps <= 0:
+            return end
+        progress = min(self.step_count / steps, 1.0)
+        return start + progress * (end - start)
 
     def scheduled_epsilon(self):
         """Epsilon for the current step_count under the linear schedule."""
-        progress = min(self.step_count / self.epsilon_decay_steps, 1.0)
-        return self.epsilon_start + progress * (self.epsilon_min - self.epsilon_start)
+        return self._linear_schedule(
+            self.epsilon_start, self.epsilon_min, self.epsilon_decay_steps)
 
     def scheduled_beta(self):
         """PER beta for the current step_count: linear to 1.0, then held."""
-        progress = min(self.step_count / self.beta_anneal_steps, 1.0)
-        return self.priority_beta_start + progress * (1.0 - self.priority_beta_start)
+        return self._linear_schedule(
+            self.priority_beta_start, 1.0, self.beta_anneal_steps)
+
+    def is_warming_up(self):
+        return len(self.memory) < self.WARMUP_TRANSITIONS
 
     def store_experience(self, state, action, reward, next_state, done):
         self.memory.add(state, action, reward, next_state, done)
 
     def choose_action(self, state):
-        if np.random.rand() <= self.epsilon:
+        # Warm-up is always fully random, even after resuming at a decayed
+        # epsilon with a small or empty buffer (e.g. from a history file).
+        if self.is_warming_up() or np.random.rand() <= self.epsilon:
             return np.random.randint(self.action_size)
         state_t = torch.as_tensor(
             state, dtype=torch.float32, device=self.device).unsqueeze(0)
@@ -117,7 +133,7 @@ class DDQNAgent:
         return int(torch.argmax(q_values[0]).item())
 
     def learn(self):
-        if len(self.memory) < max(self.batch_size, self.WARMUP_TRANSITIONS):
+        if self.is_warming_up():
             return
 
         indices, probs = self.memory.sample(self.batch_size)
@@ -190,15 +206,21 @@ class DDQNAgent:
             q_values = net(states_t)
         return q_values.cpu().numpy()
 
-    def export_state(self):
-        """Bundle everything needed to resume training into one dict."""
-        return {
+    def export_state(self, include_buffer=True):
+        """Bundle everything needed to resume training into one dict.
+
+        Without the buffer, a resume refills it through a fresh random
+        warm-up instead.
+        """
+        state = {
             "online_state_dict": self.online_net.state_dict(),
             "target_state_dict": self.target_net.state_dict(),
             "epsilon": self.epsilon,
             "step_count": self.step_count,
-            "replay_buffer": self.memory.export_state(),
         }
+        if include_buffer:
+            state["replay_buffer"] = self.memory.export_state()
+        return state
 
     def import_state(self, data):
         self.online_net.load_state_dict(data["online_state_dict"])
