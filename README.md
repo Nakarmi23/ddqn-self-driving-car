@@ -65,7 +65,7 @@ By default the window draws every step at 60 FPS so you can watch. To train fast
 |---|---|---|
 | _(none)_ | Draw every step, capped at 60 FPS | ~60 steps/s |
 | `RENDER_EVERY=10` | Draw every 10th step, no frame cap | ~390 steps/s |
-| `HEADLESS=1` | No window, no drawing, no frame cap | ~435 steps/s |
+| `HEADLESS=1` | No window, no drawing, no frame cap | ~470 steps/s |
 
 ```bash
 HEADLESS=1 python main.py           # bash

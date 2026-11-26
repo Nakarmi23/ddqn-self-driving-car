@@ -11,6 +11,8 @@ from .game_track import Track
 
 
 class Car:
+    _original_image = None  # see _sprite()
+
     def __init__(self, x, y, track: Track, rotation=0,):
         # Physics properties
         self.x = x
@@ -38,17 +40,6 @@ class Car:
         self.drag = 0.985
         self.free_decel = 0.97
         self.accelerating = False
-
-        # Image handling
-        self.original_image = pygame.image.load(
-            os.path.join(os.path.dirname(__file__), "assets", "car.png"))
-        self.original_image = pygame.transform.flip(
-            self.original_image, True, False)
-        self.image = pygame.transform.rotate(
-            self.original_image,
-            90 - math.degrees(self.angle)  # Compensate for physics angle
-        )
-        self.rect = self.image.get_rect(center=(self.x, self.y))
 
         # Ray casting system
         self.ray_length = 80
@@ -167,15 +158,9 @@ class Car:
                         origin.y - math.cos(ray_angle) * length)
             rays.append((origin, end, length))
 
-        # Broad phase: only walls in grid cells overlapping the bounding box
-        # of all rays. Padded by a few pixels because walls are registered in
-        # cells by a pixel-stepped line walk, which can miss a cell the true
-        # line only grazes.
-        pad = 2
-        xs = [c for o, e, _ in rays for c in (o.x, e.x)]
-        ys = [c for o, e, _ in rays for c in (o.y, e.y)]
-        walls = self.grid.get_walls_in_rect(
-            min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad)
+        # Broad phase: only walls near the rays.
+        walls = self.grid.get_walls_around(
+            [p for origin, end, _ in rays for p in (origin, end)])
 
         for origin, end, length in rays:
             end_point, distance = self._calculate_ray_end(
@@ -268,14 +253,6 @@ class Car:
         self._update_hitbox_points()
         self.cast_rays()
 
-        # Rotate image with slight drift visualization
-        visual_angle = self.angle + self.drift_angle * 0.3
-        self.image = pygame.transform.rotate(
-            self.original_image,
-            90 - math.degrees(visual_angle)
-        )
-        self.rect = self.image.get_rect(center=(self.x, self.y))
-
     def _update_traction(self):
         # Auto-manage traction based on drift conditions
         steering_angle = abs(self.soll_angle - self.angle)
@@ -287,7 +264,8 @@ class Car:
             self.traction = min(1.0, self.traction + 0.02)
 
     def check_collisions(self, grid: SpatialGrid):
-        nearby_walls = grid.get_nearby_cell_wall(self.x, self.y)
+        nearby_walls = grid.get_walls_around(
+            (self.front_right, self.back_right, self.back_left, self.front_left))
 
         for wall in nearby_walls:
             if self.__check_collision(wall):
@@ -353,9 +331,23 @@ class Car:
 
         return 0 <= t <= 1 and 0 <= u <= 1
 
+    @classmethod
+    def _sprite(cls):
+        """Car image, loaded from disk once and shared by every Car."""
+        if cls._original_image is None:
+            image = pygame.image.load(
+                os.path.join(os.path.dirname(__file__), "assets", "car.png"))
+            cls._original_image = pygame.transform.flip(image, True, False)
+        return cls._original_image
+
     def draw(self, surface):
-        # Draw car
-        surface.blit(self.image, self.rect)
+        # Draw car, rotated here rather than in update() so steps that are
+        # never drawn (HEADLESS, RENDER_EVERY) skip it. 90 - angle compensates
+        # for the physics angle; the drift term is a slight visual tilt.
+        visual_angle = self.angle + self.drift_angle * 0.3
+        image = pygame.transform.rotate(
+            self._sprite(), 90 - math.degrees(visual_angle))
+        surface.blit(image, image.get_rect(center=(self.x, self.y)))
 
         # Draw rays (cyan)
         for ray in self.closest_rays:
