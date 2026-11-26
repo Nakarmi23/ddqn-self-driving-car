@@ -177,21 +177,7 @@ class Game:
             else:
                 self.steps_since_checkpoint += 1
 
-            car_pos = self.car.front
-            dist_to_cp = current_checkpoint.distance_to(
-                car_pos.x, car_pos.y)
-
-            if self.prev_checkpoint_dist is None:
-                self.prev_checkpoint_dist = dist_to_cp
-
-            # Distance closed this step, scaled by top speed so full speed
-            # straight at the checkpoint earns ~+1. Summed over a segment it
-            # equals the distance covered, independent of how slowly the car
-            # drove it. See docs/adr/0001-progress-led-reward.md.
-            progress_reward = (self.prev_checkpoint_dist - dist_to_cp) / self.car.max_vel
-            self.prev_checkpoint_dist = dist_to_cp
-
-            progress_reward = max(min(progress_reward, 1.0), -1.0)
+            progress_reward = self._update_progress(has_passed)
 
             reward = self._compute_reward()
 
@@ -285,6 +271,33 @@ class Game:
         # to run, not the one just finished.
         if completed_episode % self.SAVE_EVERY == 0:
             self.save_model()
+
+    def _update_progress(self, has_passed):
+        """Return this step's progress reward and advance the distance
+        baseline. Call after _handle_checkpoint_passed on a pass step.
+
+        Progress is the distance closed this step toward the checkpoint that
+        was active at the start of the step, scaled by top speed so full
+        speed straight at it earns ~+1, clipped to [-1, 1]. Summed over a
+        segment it equals the distance covered, independent of how slowly
+        the car drove it. See docs/adr/0001-progress-led-reward.md.
+
+        On a pass step the remaining distance counts as fully closed, even
+        though the car may already be past the line and moving away from it.
+        The baseline is then the distance to the new active checkpoint, so
+        the next step measures only its own movement instead of the jump
+        from the old checkpoint (~0 px) to the new one (issue #14).
+        """
+        car_pos = self.car.front
+        active = self.checkpoints[self.current_checkpoint_index]
+        dist_to_active = active.distance_to(car_pos.x, car_pos.y)
+        dist = 0.0 if has_passed else dist_to_active
+        if self.prev_checkpoint_dist is None:  # first step of an episode
+            self.prev_checkpoint_dist = dist
+
+        progress = (self.prev_checkpoint_dist - dist) / self.car.max_vel
+        self.prev_checkpoint_dist = dist_to_active
+        return max(min(progress, 1.0), -1.0)
 
     def _angle_to_checkpoint(self):
         """Signed angle in radians, wrapped to [-pi, pi), between the car's
@@ -402,7 +415,6 @@ class Game:
         self.current_checkpoint_index = (
             self.current_checkpoint_index + 1) % len(self.checkpoints)
         self.checkpoints[self.current_checkpoint_index].is_active = True
-        self.prev_checkpoint_dist = None
 
     def screen_flash(self):
         flash = pygame.Surface((self.width, self.height))
