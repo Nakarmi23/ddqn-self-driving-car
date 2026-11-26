@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A self-driving car simulation trained with a Double Deep Q-Network (DDQN). A pygame car drives a fixed race track, casting rays to sense walls, and a PyTorch agent learns to steer/accelerate through checkpoints via reinforcement learning. There is no manual-play mode or test suite — `main.py` starts continuous training and runs forever until the window is closed (or Ctrl+C in headless mode).
+A self-driving car simulation trained with a Double Deep Q-Network (DDQN). A pygame car drives a fixed race track, casting rays to sense walls, and a PyTorch agent learns to steer/accelerate through checkpoints via reinforcement learning. There is no manual-play mode — `main.py` starts continuous training and runs forever until the window is closed (or Ctrl+C in headless mode).
 
 ## Running
 
@@ -15,7 +15,7 @@ python main.py
 # HEADLESS=1 (no window, no frame cap) or RENDER_EVERY=N (draw every Nth step, no cap) for fast training
 ```
 
-There are no lint/test/build commands configured in this repo (no pytest, no linter config). The one check is `python -m scripts.check_spawns`, which exits 1 if any track template has a bad spawn (see `game/game_spawn.py`). Training progress prints to stdout per step/episode, including a `[DDQNAgent] Using device: ...` line at startup showing whether it's running on CUDA, MPS, or CPU — see README for installing a GPU-enabled `torch` build per platform.
+There is no lint/build config. Tests are stdlib `unittest` (no pytest) under `tests/`: `python -m unittest discover -s tests -t .`. The other check is `python -m scripts.check_spawns`, which exits 1 if any track template has a bad spawn (see `game/game_spawn.py`). Training progress prints to stdout per step/episode, including a `[DDQNAgent] Using device: ...` line at startup showing whether it's running on CUDA, MPS, or CPU — see README for installing a GPU-enabled `torch` build per platform.
 
 ## Architecture
 
@@ -26,7 +26,7 @@ There are no lint/test/build commands configured in this repo (no pytest, no lin
 **Game state/physics live under `game/`:**
 - `game_car.py` (`Car`) — physics (drift/traction/acceleration), 12-ray raycasting for wall sensing, hitbox-edge collision and checkpoint-crossing detection via line-segment intersection. `Car.get_state()` returns the car's portion of the RL state vector (normalized ray distances + velocity + traction + drift angle).
 - `game_track.py` (`Track`) — thin wrapper that loads a track definition from `game/track_templates/` and renders it.
-- `game_grid.py` (`SpatialGrid`) — spatial partitioning so collision checks only test nearby walls, not the whole wall list.
+- `game_grid.py` (`SpatialGrid`) — spatial partitioning so collision checks only test nearby walls, not the whole wall list. `add_wall` registers a wall in every cell it touches (supercover, closed cells), so `get_walls_in_rect` over a query's bounding box is exact with no padding; `Car.cast_rays` and `Car.check_collisions` query it through `get_walls_around(points)`.
 - `game_checkpoint.py`, `game_wall.py`, `game_point.py`, `game_intersection.py` — small geometry/data classes used by the above.
 - `game/track_templates/template*.py` — track layouts (walls, checkpoints, starting position/rotation); `TRACK_TEMPLATE` picks one, default `template5`. Add new tracks here. Checkpoint 0 is the start/finish line. The spawn must sit between the last checkpoint and checkpoint 0, facing checkpoint 0, with the hitbox at least `SPAWN_MARGIN` (10 px) from every checkpoint and clear of walls; a hitbox on a checkpoint counts the pass on step 1 without the car moving (#8). The rules live in `game/game_spawn.py` (`spawn_problems`), shared by `Game._check_spawn()` (raises at startup) and `python -m scripts.check_spawns`; run the script after adding or editing a track.
 
