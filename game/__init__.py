@@ -68,8 +68,11 @@ class Game:
     # Greedy evaluation (epsilon 0, no storing or learning): EVAL_EPISODES
     # episodes after every EVAL_EVERY-th training episode, once warm-up is
     # over. The best round, by checkpoints passed, goes to BEST_MODEL_PATH.
+    # One episode: the spawn is fixed, the physics deterministic and greedy
+    # actions an argmax, so further episodes would replay it exactly. Raise
+    # it only once evaluation starts vary.
     EVAL_EVERY = 50
-    EVAL_EPISODES = 5
+    EVAL_EPISODES = 1
     # Stop training once every episode of an evaluation round completes this
     # many laps (the "working model" bar). None disables the early stop.
     EARLY_STOP_LAPS = 2
@@ -138,12 +141,26 @@ class Game:
         """Train until the step budget is spent, an evaluation meets the
         early-stop bar, or the window is closed / Ctrl+C is pressed. Every
         way out saves the same checkpoint."""
+        if self._budget_spent():
+            # A resumed run that already spent its budget: nothing to train,
+            # and its final policy was scored when the budget ran out.
+            print(f"Training budget of {self.TOTAL_TRAIN_STEPS} learning "
+                  f"steps already spent, nothing to do.")
+            self.close()
+            return
+
         try:
             while not self._budget_spent():
                 completed_episode = self.episode
                 episode_reward, steps, _, quit_requested = self._run_episode()
                 if quit_requested:
                     break
+                if self._budget_spent():
+                    # Cut short by the budget: not logged, like an
+                    # interrupted episode (its length and reward would read
+                    # as an early crash). The loop ends and the final round
+                    # below scores the policy, once.
+                    continue
                 self._finish_episode(episode_reward, steps)
 
                 if (completed_episode % self.EVAL_EVERY == 0
@@ -566,23 +583,33 @@ class Game:
         best.update(self._run_state())
         best.update({
             "track": self.track_name,
+            "num_checkpoints": len(self.checkpoints),
             "eval": dataclasses.asdict(result),
         })
         self._atomic_torch_save(best, self.BEST_MODEL_PATH)
 
     def _load_best_eval(self):
         """The EvalResult saved in BEST_MODEL_PATH, so a restarted run only
-        replaces it with a better one. None if there is no best yet or it
-        was earned on another track (checkpoint counts don't compare)."""
+        replaces it with a better one. None if there is no best yet, it was
+        earned on another track or checkpoint layout (checkpoint counts
+        don't compare), or the file can't be read as one."""
         if not os.path.exists(self.BEST_MODEL_PATH):
             return None
         # weights_only=False for the same reason as load_model: a trusted
         # file written locally by _save_best.
         best = torch.load(self.BEST_MODEL_PATH, map_location=self.agent.device,
                           weights_only=False)
-        if best.get("track") != self.track_name:
+        if (best.get("track") != self.track_name
+                or best.get("num_checkpoints") != len(self.checkpoints)):
             return None
-        return EvalResult(**best["eval"])
+        try:
+            return EvalResult(**best["eval"])
+        except (KeyError, TypeError) as error:
+            # Written before EvalResult gained or lost a field: treat it as
+            # no best yet rather than refusing to start.
+            print(f"Ignoring the evaluation in {self.BEST_MODEL_PATH} "
+                  f"({error!r}); the next round becomes the best.")
+            return None
 
     def load_model(self):
         if not os.path.exists(self.CHECKPOINT_LATEST_PATH):

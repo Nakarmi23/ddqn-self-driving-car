@@ -5,13 +5,15 @@ import tempfile
 import unittest
 from unittest import mock
 
+import torch
+
 from game import Game
 from game.game_eval import EvalResult
 
 
-class GameEvaluateTest(unittest.TestCase):
-    """Greedy evaluation on a real headless Game, run in a scratch working
-    directory so logs/ and models/ don't touch the repo's."""
+class HeadlessGameTestCase(unittest.TestCase):
+    """Real headless Games, run in a scratch working directory so logs/ and
+    models/ don't touch the repo's."""
 
     def setUp(self):
         self._cwd = os.getcwd()
@@ -40,6 +42,10 @@ class GameEvaluateTest(unittest.TestCase):
     def eval_rows(self):
         with open(os.path.join("logs", "eval_metrics.csv"), newline="") as f:
             return list(csv.DictReader(f))
+
+
+class GameEvaluateTest(HeadlessGameTestCase):
+    """Greedy evaluation."""
 
     def test_evaluation_does_not_train(self):
         game = self.make_game()
@@ -79,8 +85,10 @@ class GameEvaluateTest(unittest.TestCase):
         game.evaluate()
         saved = os.stat(Game.BEST_MODEL_PATH).st_mtime_ns
 
-        # Same weights, deterministic greedy policy: an equal result, which
-        # must not replace the saved best, even from a fresh process.
+        # Same weights (resumed from best.pt), deterministic greedy policy:
+        # an equal result, which must not replace the saved best, even from
+        # a fresh process.
+        shutil.copy(Game.BEST_MODEL_PATH, Game.CHECKPOINT_LATEST_PATH)
         restarted = self.make_game()
         restarted.evaluate()
 
@@ -98,13 +106,89 @@ class GameEvaluateTest(unittest.TestCase):
 
     def test_training_can_resume_from_the_best_model(self):
         game = self.make_game()
+        game.episode = 123
+        game.agent.step_count = 4567
         game.evaluate()
         shutil.copy(Game.BEST_MODEL_PATH, Game.CHECKPOINT_LATEST_PATH)
 
         resumed = self.make_game()
 
-        self.assertEqual(resumed.episode, game.episode)
-        self.assertEqual(resumed.agent.step_count, game.agent.step_count)
+        self.assertEqual(resumed.episode, 123)
+        self.assertEqual(resumed.agent.step_count, 4567)
+
+    def test_best_model_from_another_checkpoint_layout_is_not_the_bar(self):
+        game = self.make_game()
+        game.evaluate()
+        best = torch.load(Game.BEST_MODEL_PATH, weights_only=False)
+        best["num_checkpoints"] += 1
+        torch.save(best, Game.BEST_MODEL_PATH)
+
+        self.assertIsNone(self.make_game().best_eval)
+
+    def test_unreadable_best_eval_is_ignored(self):
+        game = self.make_game()
+        game.evaluate()
+        best = torch.load(Game.BEST_MODEL_PATH, weights_only=False)
+        best["eval"]["retired_field"] = 0
+        torch.save(best, Game.BEST_MODEL_PATH)
+
+        with mock.patch("builtins.print"):
+            self.assertIsNone(self.make_game().best_eval)
+
+
+class GameRunTest(HeadlessGameTestCase):
+    """run() end to end with a tiny budget and warm-up."""
+
+    BUDGET = 60
+
+    def make_training_game(self):
+        game = self.make_game()
+        game.TOTAL_TRAIN_STEPS = self.BUDGET
+        game.EVAL_EVERY = 1
+        game.EARLY_STOP_LAPS = None
+        game.agent.WARMUP_TRANSITIONS = game.agent.batch_size
+        return game
+
+    def episode_rows(self):
+        with open(os.path.join("logs", "episode_rewards.csv"), newline="") as f:
+            return list(csv.DictReader(f))
+
+    def test_run_stops_at_the_budget_and_scores_the_final_policy_once(self):
+        game = self.make_training_game()
+
+        with mock.patch("builtins.print"):
+            game.run()
+
+        self.assertEqual(game.agent.step_count, self.BUDGET)
+        steps = [int(row["step"]) for row in self.eval_rows()]
+        self.assertEqual(steps.count(self.BUDGET), 1)
+        # The episode the budget cut short is not logged.
+        logged = sum(int(row["steps"]) for row in self.episode_rows())
+        warmup = game.agent.WARMUP_TRANSITIONS
+        self.assertLess(logged, warmup + self.BUDGET)
+
+    def test_run_with_spent_budget_does_nothing(self):
+        game = self.make_training_game()
+        with mock.patch("builtins.print"):
+            game.run()
+        rows = len(self.eval_rows())
+
+        restarted = self.make_training_game()
+        with mock.patch("builtins.print"):
+            restarted.run()
+
+        self.assertEqual(len(self.eval_rows()), rows)
+        self.assertEqual(restarted.agent.step_count, self.BUDGET)
+
+    def test_run_stops_early_once_the_lap_target_is_met(self):
+        game = self.make_training_game()
+        game.EARLY_STOP_LAPS = 0  # any round meets it
+
+        with mock.patch("builtins.print"):
+            game.run()
+
+        self.assertEqual(len(self.eval_rows()), 1)
+        self.assertLess(game.agent.step_count, self.BUDGET)
 
 
 if __name__ == "__main__":
