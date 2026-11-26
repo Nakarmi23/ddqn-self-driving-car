@@ -1,6 +1,7 @@
 from .game_track import Track
 from .game_car import Car
 from .game_spawn import spawn_problems
+from .game_eval import EvalResult, is_better, meets_lap_target, summarize
 from .game_point import Point
 import pygame
 import math
@@ -8,6 +9,7 @@ import numpy as np
 import torch
 from ai.ddqn_agent import DDQNAgent
 from utils.csv_logger import CsvLogger
+import dataclasses
 import glob
 import os
 
@@ -49,21 +51,28 @@ class Game:
     # way out once stuck.
     TIME_COST = ALIGNMENT_WEIGHT * 0.5
     SAVE_EVERY = 10
-    MAX_EPISODES = 1000
     MAX_STEPS_PER_EPISODE = 3000
     STALL_LIMIT = 1000  # steps without passing a checkpoint before giving up
     CHECKPOINT_LATEST_PATH = "models/checkpoint_latest.pt"
     CHECKPOINT_HISTORY_DIR = "models/history"
+    BEST_MODEL_PATH = "models/best.pt"
     KEEP_HISTORY_COUNT = 5
     TOP_N = 20
     RECENT_N = 50
-    # Training budget in learning steps (agent.step_count). Stopping on it
-    # is tracked in issue #10; for now it only sets the epsilon and PER beta
-    # schedules.
+    # Training budget in learning steps (agent.step_count): run() stops
+    # when it is spent. Also sets the epsilon and PER beta schedules.
     TOTAL_TRAIN_STEPS = 1_000_000
     # Fraction of the budget over which epsilon decays linearly 1.0 -> min.
     EPSILON_DECAY_FRACTION = 0.4
     FPS_CAP = 60  # only applied when drawing every step (watch mode)
+    # Greedy evaluation (epsilon 0, no storing or learning): EVAL_EPISODES
+    # episodes after every EVAL_EVERY-th training episode, once warm-up is
+    # over. The best round, by checkpoints passed, goes to BEST_MODEL_PATH.
+    EVAL_EVERY = 50
+    EVAL_EPISODES = 5
+    # Stop training once every episode of an evaluation round completes this
+    # many laps (the "working model" bar). None disables the early stop.
+    EARLY_STOP_LAPS = 2
 
     def __init__(self):
         # Display modes, from env vars:
@@ -108,34 +117,100 @@ class Game:
             "logs/episode_rewards.csv", ["episode", "reward", "steps", "epsilon"])
         self.q_value_log = CsvLogger("logs/q_value_metrics.csv", [
             "episode", "mean_online_q", "std_online_q", "mean_delta_q", "max_delta_q"])
+        self.eval_log = CsvLogger("logs/eval_metrics.csv", [
+            "episode", "step", "mean_reward", "mean_checkpoints",
+            "min_checkpoints", "mean_laps", "min_laps", "new_best"])
 
         self.load_model()
+        self.best_eval = self._load_best_eval()
 
     def _should_render(self):
         return not self.headless and self.total_steps % self.render_every == 0
 
     def _logs(self):
-        return (self.episode_log, self.q_value_log, self.agent.training_log)
+        return (self.episode_log, self.q_value_log, self.eval_log,
+                self.agent.training_log)
+
+    def _budget_spent(self):
+        return self.agent.step_count >= self.TOTAL_TRAIN_STEPS
 
     def run(self):
+        """Train until the step budget is spent, an evaluation meets the
+        early-stop bar, or the window is closed / Ctrl+C is pressed. Every
+        way out saves the same checkpoint."""
         try:
-            while True:
-                episode_reward, steps, quit_requested = self._run_episode()
+            while not self._budget_spent():
+                completed_episode = self.episode
+                episode_reward, steps, _, quit_requested = self._run_episode()
                 if quit_requested:
                     break
                 self._finish_episode(episode_reward, steps)
+
+                if (completed_episode % self.EVAL_EVERY == 0
+                        and not self.agent.is_warming_up()):
+                    result = self.evaluate()
+                    if result is None:  # window closed mid-evaluation
+                        break
+                    if (self.EARLY_STOP_LAPS is not None
+                            and meets_lap_target(result, self.EARLY_STOP_LAPS)):
+                        print(f"Every evaluation episode completed "
+                              f"{self.EARLY_STOP_LAPS}+ laps, stopping.")
+                        break
+            else:
+                print(f"Training budget of {self.TOTAL_TRAIN_STEPS} "
+                      f"learning steps reached, stopping.")
+                # Score the final policy too, so the episodes since the last
+                # scheduled round can still produce best.pt.
+                self.evaluate()
         except KeyboardInterrupt:
             # Ctrl+C (how headless runs are stopped) is handled like closing
             # the window. save_model writes atomically, so an interrupt that
             # lands mid-save still leaves the previous checkpoint intact.
             print("\nInterrupted, saving checkpoint...")
 
-        # The interrupted episode isn't logged; save so the next run resumes
+        # An interrupted episode isn't logged; save so the next run resumes
         # at this same (unfinished) episode number.
         self.save_model(write_history=False)
+        self.close()
+
+    def close(self):
         for log in self._logs():
             log.close()
         pygame.quit()
+
+    def evaluate(self):
+        """Run EVAL_EPISODES greedy episodes and record how far they got.
+
+        Nothing is stored or learned and epsilon is left alone, so training
+        resumes exactly where it was. The round is logged to eval_metrics.csv
+        and, if it beats the best so far (game_eval.is_better), saved to
+        BEST_MODEL_PATH. Returns the EvalResult, or None if the window was
+        closed mid-round (that round is discarded).
+        """
+        episodes = []
+        for _ in range(self.EVAL_EPISODES):
+            reward, _, checkpoints_passed, quit_requested = self._run_episode(
+                training=False)
+            if quit_requested:
+                return None
+            episodes.append((reward, checkpoints_passed))
+
+        result = summarize(episodes, len(self.checkpoints))
+        new_best = is_better(result, self.best_eval)
+        print(f"Eval after episode {self.episode - 1} | "
+              f"Mean reward: {result.mean_reward:.2f} | "
+              f"Checkpoints: mean {result.mean_checkpoints:.1f}, "
+              f"min {result.min_checkpoints} | "
+              f"Laps: mean {result.mean_laps:.1f}, min {result.min_laps}"
+              + (" | new best" if new_best else ""))
+        self.eval_log.log(
+            self.episode - 1, self.agent.step_count, f"{result.mean_reward:.2f}",
+            f"{result.mean_checkpoints:.4f}", result.min_checkpoints,
+            f"{result.mean_laps:.4f}", result.min_laps, int(new_best))
+        if new_best:
+            self.best_eval = result
+            self._save_best(result)
+        return result
 
     @staticmethod
     def _atomic_torch_save(obj, path):
@@ -145,23 +220,27 @@ class Game:
         torch.save(obj, tmp_path)
         os.replace(tmp_path, path)
 
-    def _run_episode(self):
+    def _run_episode(self, training=True):
         """Step the environment until the episode ends.
 
-        Returns (episode_reward, steps, quit_requested). Every way an episode
-        can end (crash, stall timeout, max steps) falls through to the single
-        _reset_game_state() call at the bottom, so the next episode always
-        starts from a clean reset.
+        Returns (episode_reward, steps, checkpoints_passed, quit_requested).
+        With training=False (greedy evaluation) actions are argmax and no
+        experience is stored or learned from. A training episode also ends
+        (as truncation) once the step budget is spent. Every way an episode
+        can end (crash, stall timeout, max steps, budget) falls through to
+        the single _reset_game_state() call at the bottom, so the next
+        episode always starts from a clean reset.
         """
         state = self._get_state()
         episode_reward = 0
         steps = 0
+        checkpoints_passed = 0
 
         while steps < self.MAX_STEPS_PER_EPISODE:
             if self.handle_events():
-                return episode_reward, steps, True
+                return episode_reward, steps, checkpoints_passed, True
 
-            action = self.agent.choose_action(state)
+            action = self.agent.choose_action(state, greedy=not training)
             self._apply_action(action)
 
             self.car.prev_front_center = Point(
@@ -172,6 +251,7 @@ class Game:
             has_passed = self.car.check_checkpoint_collision(
                 current_checkpoint)
             if has_passed:
+                checkpoints_passed += 1
                 self.steps_since_checkpoint = 0
                 self._handle_checkpoint_passed(current_checkpoint)
             else:
@@ -203,18 +283,20 @@ class Game:
 
             episode_reward += reward
 
-            self.agent.store_experience(
-                state, action, reward, next_state, episode_over)
+            if training:
+                self.agent.store_experience(
+                    state, action, reward, next_state, episode_over)
 
             rendering = self._should_render()
             if rendering:
-                self.render(episode_reward)
+                self.render(episode_reward, evaluating=not training)
 
             state = next_state
             steps += 1
             self.total_steps += 1
 
-            self.agent.learn()
+            if training:
+                self.agent.learn()
 
             if self.frame_cap:
                 self.clock.tick(self.frame_cap)
@@ -223,10 +305,12 @@ class Game:
                 if rendering:
                     self.screen_flash()
                 break
+            if training and self._budget_spent():
+                break
 
         # Single reset path for every way an episode can end.
         self._reset_game_state()
-        return episode_reward, steps, False
+        return episode_reward, steps, checkpoints_passed, False
 
     def _finish_episode(self, episode_reward, steps):
         """Bookkeeping for a completed episode: stats, logs, saving."""
@@ -423,9 +507,11 @@ class Game:
         pygame.display.flip()
         pygame.time.delay(10)
 
-    def render(self, reward):
+    def render(self, reward, evaluating=False):
         self.surface.fill('black')
         self._draw_text(f"Reward: {reward}", (10, 10), 36)
+        if evaluating:
+            self._draw_text("Greedy evaluation", (10, 40), 28, (255, 255, 0))
         self.track.render()
         self.car.draw(self.surface)
         self._draw_speedometer()
@@ -437,12 +523,7 @@ class Game:
         `next_episode` is the episode number training should resume at.
         History files are named after the last completed episode.
         """
-        run_state = {
-            "next_episode": self.episode,
-            "top_rewards": self.top_rewards,
-            "recent_rewards": self.recent_rewards,
-        }
-
+        run_state = self._run_state()
         checkpoint = self.agent.export_state()
         checkpoint.update(run_state)
         self._atomic_torch_save(checkpoint, self.CHECKPOINT_LATEST_PATH)
@@ -466,6 +547,42 @@ class Game:
             self.CHECKPOINT_HISTORY_DIR, "checkpoint_ep*.pt")))
         for stale_checkpoint in checkpoints[:-self.KEEP_HISTORY_COUNT]:
             os.remove(stale_checkpoint)
+
+    def _run_state(self):
+        """Run counters saved alongside the agent state in every checkpoint."""
+        return {
+            "next_episode": self.episode,
+            "top_rewards": self.top_rewards,
+            "recent_rewards": self.recent_rewards,
+        }
+
+    def _save_best(self, result):
+        """Write the current weights to BEST_MODEL_PATH with the evaluation
+        that earned them and the track it ran on. Separate from
+        checkpoint_latest.pt and never pruned; like a history file it has no
+        replay buffer, and copying it over checkpoint_latest.pt resumes
+        training from it."""
+        best = self.agent.export_state(include_buffer=False)
+        best.update(self._run_state())
+        best.update({
+            "track": self.track_name,
+            "eval": dataclasses.asdict(result),
+        })
+        self._atomic_torch_save(best, self.BEST_MODEL_PATH)
+
+    def _load_best_eval(self):
+        """The EvalResult saved in BEST_MODEL_PATH, so a restarted run only
+        replaces it with a better one. None if there is no best yet or it
+        was earned on another track (checkpoint counts don't compare)."""
+        if not os.path.exists(self.BEST_MODEL_PATH):
+            return None
+        # weights_only=False for the same reason as load_model: a trusted
+        # file written locally by _save_best.
+        best = torch.load(self.BEST_MODEL_PATH, map_location=self.agent.device,
+                          weights_only=False)
+        if best.get("track") != self.track_name:
+            return None
+        return EvalResult(**best["eval"])
 
     def load_model(self):
         if not os.path.exists(self.CHECKPOINT_LATEST_PATH):
