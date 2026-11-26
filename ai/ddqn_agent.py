@@ -121,10 +121,13 @@ class DDQNAgent:
     def store_experience(self, state, action, reward, next_state, done):
         self.memory.add(state, action, reward, next_state, done)
 
-    def choose_action(self, state):
+    def choose_action(self, state, greedy=False):
+        """Epsilon-greedy action, or the argmax action when `greedy` (used by
+        evaluation; epsilon and warm-up are ignored and left untouched)."""
         # Warm-up is always fully random, even after resuming at a decayed
         # epsilon with a small or empty buffer (e.g. from a history file).
-        if self.is_warming_up() or np.random.rand() <= self.epsilon:
+        if not greedy and (self.is_warming_up()
+                           or np.random.rand() <= self.epsilon):
             return np.random.randint(self.action_size)
         state_t = torch.as_tensor(
             state, dtype=torch.float32, device=self.device).unsqueeze(0)
