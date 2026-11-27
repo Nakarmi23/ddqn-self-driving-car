@@ -9,7 +9,7 @@ os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 import pygame  # noqa: E402
 
 from game.game_car import Car  # noqa: E402
-from game.game_grid import SpatialGrid  # noqa: E402
+from game.game_grid import QUERY_PAD, SpatialGrid  # noqa: E402
 from game.game_track import Track  # noqa: E402
 from game.game_wall import Wall  # noqa: E402
 from scripts.check_spawns import template_names  # noqa: E402
@@ -67,6 +67,18 @@ class SpatialGridTest(unittest.TestCase):
         self.assertEqual(walls_in_cell(grid, 0, 0), [])
         self.assertEqual(set(grid.grid), {(1, 0)})
 
+    def test_wall_on_a_cell_border_found_by_a_box_a_rounding_error_short(self):
+        # A ray end computed as 79.99999999999999 instead of 80 must still
+        # see the wall on x = 80, which Car's closed hit test counts.
+        grid = SpatialGrid(cell_size=80)
+        wall = Wall(80, 10, 80, 70)
+        grid.add_wall(wall)
+        short = math.nextafter(80.0, 0.0)
+
+        self.assertIn(wall, grid.get_walls_in_rect(5, 5, short, 75))
+        self.assertIn(wall, grid.get_walls_in_rect(5, 5, 80 - QUERY_PAD / 2, 75))
+        self.assertEqual(grid.get_walls_in_rect(5, 5, 79.99, 75), [])
+
     def test_wall_ending_on_a_cell_corner(self):
         grid = SpatialGrid(cell_size=10)
         wall = Wall(0, 0, 10, 10)
@@ -119,14 +131,15 @@ class SpatialGridTest(unittest.TestCase):
             # A box holding a point of the wall gets it back...
             if segment_meets_closed_box(x1, y1, x2, y2, bx0, by0, bx1, by1):
                 self.assertTrue(found, box)
-            # ...and a box gets it back only if one of the cells it
-            # overlaps holds a point of it.
+            # ...and a box gets it back only if one of the cells its
+            # QUERY_PAD-widened self overlaps holds a point of it.
             if found:
                 self.assertTrue(segment_meets_closed_box(
                     x1, y1, x2, y2,
-                    math.floor(bx0 / s) * s, math.floor(by0 / s) * s,
-                    (math.floor(bx1 / s) + 1) * s - edge,
-                    (math.floor(by1 / s) + 1) * s - edge), box)
+                    math.floor((bx0 - QUERY_PAD) / s) * s,
+                    math.floor((by0 - QUERY_PAD) / s) * s,
+                    (math.floor((bx1 + QUERY_PAD) / s) + 1) * s - edge,
+                    (math.floor((by1 + QUERY_PAD) / s) + 1) * s - edge), box)
 
 
 class _AllWalls:
@@ -157,9 +170,16 @@ class GridMatchesFullScanTest(unittest.TestCase):
                 track = Track(self.surface, name)
                 full = _AllWalls(track.walls)
                 car = Car(*track.starting_position, track, track.starting_rotation)
-                for _ in range(1000):
+                s = track.walls_grid.cell_size
+                for i in range(1000):
                     car.x, car.y = rng.uniform(0, width), rng.uniform(0, height)
                     car.angle = rng.uniform(-math.pi, math.pi)
+                    if i % 2:
+                        # On cell borders, heading along an axis, so rays and
+                        # hitbox edges run along or end on border walls.
+                        car.x = round(car.x / s) * s
+                        car.y = round(car.y / s) * s
+                        car.angle = rng.randrange(-2, 2) * math.pi / 2
                     car._update_hitbox_points()
 
                     car.grid = track.walls_grid
