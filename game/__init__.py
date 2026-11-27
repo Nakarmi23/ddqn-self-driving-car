@@ -203,6 +203,12 @@ class Game:
         if not self.run_dir:
             return
         manifest = game_run.read_manifest(self.run_dir)
+        if manifest is None:
+            # Deleted mid-run: write a fresh one rather than lose the
+            # finished status (its started_at is now unknown).
+            manifest = game_run.new_manifest(
+                self.seed, self.TOTAL_TRAIN_STEPS, self.track_name)
+            manifest["started_at"] = None
         game_run.write_manifest(
             self.run_dir, game_run.mark_finished(manifest, stop_reason))
 
@@ -210,7 +216,8 @@ class Game:
         if not self.run_dir:
             return True  # nothing to record without a manifest
         manifest = game_run.read_manifest(self.run_dir)
-        return manifest["status"] == game_run.STATUS_FINISHED
+        return (manifest is not None
+                and manifest["status"] == game_run.STATUS_FINISHED)
 
     def _should_render(self):
         return not self.headless and self.total_steps % self.render_every == 0
@@ -229,12 +236,19 @@ class Game:
         is written at the start and marked finished at the budget or the
         early stop; an interrupted run stays "running"."""
         self._start_manifest()
+        if self.run_dir and self._run_finished():
+            # Finished at the budget or the early stop: rerunning the same
+            # command (a sweep script, say) must not train it further.
+            print(f"Run in {self.run_dir} already finished, nothing to do.")
+            self.close()
+            return
         if self._budget_spent():
             # A resumed run that already spent its budget: nothing to train,
             # and its final policy was scored when the budget ran out. Unless
             # it was interrupted during that final round, before its manifest
-            # said finished: then score it now, so it can be finished.
-            if self._run_finished():
+            # said finished (a finished one returned above): then score it
+            # now, so it can be finished.
+            if not self.run_dir:
                 print(f"Training budget of {self.TOTAL_TRAIN_STEPS} learning "
                       f"steps already spent, nothing to do.")
             else:
@@ -246,6 +260,7 @@ class Game:
             self.close()
             return
 
+        stop_reason = None  # set when the run finishes, not when it's cut off
         try:
             while not self._budget_spent():
                 completed_episode = self.episode
@@ -269,7 +284,7 @@ class Game:
                             and meets_lap_target(result, self.EARLY_STOP_LAPS)):
                         print(f"Every evaluation episode completed "
                               f"{self.EARLY_STOP_LAPS}+ laps, stopping.")
-                        self._finish_manifest("early_stop")
+                        stop_reason = "early_stop"
                         break
             else:
                 print(f"Training budget of {self.TOTAL_TRAIN_STEPS} "
@@ -277,7 +292,7 @@ class Game:
                 # Score the final policy too, so the episodes since the last
                 # scheduled round can still produce best.pt.
                 if self.evaluate() is not None:
-                    self._finish_manifest("budget")
+                    stop_reason = "budget"
         except KeyboardInterrupt:
             # Ctrl+C (how headless runs are stopped) is handled like closing
             # the window. save_model writes atomically, so an interrupt that
@@ -287,6 +302,11 @@ class Game:
         # An interrupted episode isn't logged; save so the next run resumes
         # at this same (unfinished) episode number.
         self.save_model(write_history=False)
+        if stop_reason is not None:
+            # Only after the final save, so a kill in between leaves the run
+            # "running" (resumable) rather than "finished" with a stale
+            # checkpoint.
+            self._finish_manifest(stop_reason)
         self.close()
 
     def close(self):
@@ -673,6 +693,7 @@ class Game:
             "next_episode": self.episode,
             "top_rewards": self.top_rewards,
             "recent_rewards": self.recent_rewards,
+            "seed": self.seed,
         }
         if self.seed is not None:
             state["rng_state"] = game_run.rng_state()
@@ -726,6 +747,14 @@ class Game:
         checkpoint = torch.load(
             self.checkpoint_latest_path, map_location=self.agent.device,
             weights_only=False)
+        if "seed" in checkpoint and checkpoint["seed"] != self.seed:
+            # Without a run directory there is no manifest to catch this, and
+            # resuming would quietly continue the other seed's run (its
+            # rng_state included).
+            raise SystemExit(
+                f"SEED={self.seed!r} does not match seed="
+                f"{checkpoint['seed']!r} in {self.checkpoint_latest_path}; "
+                f"set SEED to match, or use a separate RUN_DIR")
         self.agent.import_state(checkpoint)
         if "next_episode" in checkpoint:
             self.episode = checkpoint["next_episode"]

@@ -58,7 +58,11 @@ def set_rng_state(state):
     # the setters want CPU byte tensors.
     torch.set_rng_state(state["torch"].cpu())
     if "cuda" in state and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all([s.cpu() for s in state["cuda"]])
+        # Saved on a machine with more GPUs: restore the devices this one
+        # has (set_rng_state_all would ask for the missing ones and fail).
+        for device, cuda_state in enumerate(
+                state["cuda"][:torch.cuda.device_count()]):
+            torch.cuda.set_rng_state(cuda_state.cpu(), device)
 
 
 def git_commit():
