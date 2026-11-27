@@ -5,7 +5,7 @@ import numpy as np
 from .game_point import Point
 from .game_grid import SpatialGrid
 from .game_wall import Wall
-from .game_checkpoint import Checkpoint
+from .game_checkpoint import Checkpoint, count_passes
 from .game_intersection import Intersection
 from .game_track import Track
 
@@ -312,6 +312,11 @@ class Car:
         the other. Overlapping the line or crossing it the wrong way does not
         count (issue #19)."""
         return checkpoint.crossed_forward(self.prev_front, self.front, behind)
+
+    def count_checkpoint_passes(self, checkpoints, index):
+        """How many checkpoints, from `checkpoints[index]` on, the car's front
+        point crossed forward in order during the last update()."""
+        return count_passes(checkpoints, index, self.prev_front, self.front)
 
     @classmethod
     def _sprite(cls):

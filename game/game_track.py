@@ -10,6 +10,8 @@ class Track():
         get_track = importlib.import_module(
             f".track_templates.{track_name}", package="game").get_track
         self.starting_position, self.starting_rotation, self.walls, self.walls_grid, self.checkpoints = get_track()
+        for checkpoint in self.checkpoints:
+            checkpoint.extend_to_walls(self.walls)
 
     def render(self):
         self.walls_grid.draw(self.surface)
