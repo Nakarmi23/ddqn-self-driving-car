@@ -74,6 +74,21 @@ $env:HEADLESS=1; python main.py     # PowerShell
 
 In headless mode there is no window to close, so stop with Ctrl+C. Training resumes from the last checkpoint (saved every 10 episodes), so anything since then is lost.
 
+#### Seeded, isolated runs
+
+Two more variables make a run reproducible and keep it apart from others:
+
+| Variable | Effect |
+|---|---|
+| `SEED=N` | Seeds Python, numpy and torch (CPU and CUDA) and turns on deterministic torch kernels, so two runs with the same seed write identical logs |
+| `RUN_DIR=path` | Writes this run's `logs/`, `models/` and a `manifest.json` into `path` instead of the working directory |
+
+```bash
+HEADLESS=1 SEED=0 RUN_DIR=runs/seed0 python main.py
+```
+
+The manifest records the seed, budget, track and git commit, with `status` `running` until the budget is spent (or the early stop is met), when it becomes `finished`. Running again with the same `RUN_DIR` resumes the run; `SEED` and `TRACK_TEMPLATE` then default to the manifest's, and a different value is refused. Without `RUN_DIR`, the top-level `logs/` and `models/` are used as before.
+
 ### Game Features
 
 - **Scoring System**: Earn points by passing checkpoints
