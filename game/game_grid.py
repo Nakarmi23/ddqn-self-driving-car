@@ -1,6 +1,14 @@
 import pygame
 from .game_wall import Wall
 
+# How far get_walls_in_rect widens a query, in px. Registration is exact to
+# the half-open cell, but ray and hitbox endpoints come from float maths, so
+# one that should land on a cell border can stop a rounding error short of it
+# (and _segment_touches_cell can drop a cell a wall clips by a sliver of that
+# size). The hit tests in Car are closed, so a wall on that border must still
+# come back: queries err towards including the neighbouring cell.
+QUERY_PAD = 1e-6
+
 
 class SpatialGrid:
     def __init__(self, cell_size=100):
@@ -42,9 +50,10 @@ class SpatialGrid:
         return self.get_walls_in_rect(min(xs), min(ys), max(xs), max(ys))
 
     def get_walls_in_rect(self, min_x, min_y, max_x, max_y):
-        """Unique walls registered in any cell overlapping the rectangle."""
-        cx0, cy0 = self.__get_cell(min_x, min_y)
-        cx1, cy1 = self.__get_cell(max_x, max_y)
+        """Unique walls registered in any cell overlapping the rectangle
+        widened by QUERY_PAD on every side."""
+        cx0, cy0 = self.__get_cell(min_x - QUERY_PAD, min_y - QUERY_PAD)
+        cx1, cy1 = self.__get_cell(max_x + QUERY_PAD, max_y + QUERY_PAD)
         walls = {}
         for cx in range(cx0, cx1 + 1):
             for cy in range(cy0, cy1 + 1):
