@@ -57,6 +57,8 @@ class Car:
         self.left_center = None
 
         self._update_hitbox_points()
+        # Front point before the last update(), for checkpoint crossings.
+        self.prev_front = self.front
         self.cast_rays()
 
     def get_state(self):
@@ -206,6 +208,8 @@ class Car:
         return None
 
     def update(self):
+        self.prev_front = self.front
+
         # Apply drag with drift modifier
         self.vel *= self.drag * (0.97 if self.traction < 0.6 else 1.0)
 
@@ -302,34 +306,12 @@ class Car:
 
         return 0 <= t <= 1 and 0 <= u <= 1
 
-    def check_checkpoint_collision(self, checkpoint: Checkpoint):
-        edge = [
-            (self.front_right, self.back_right),
-            (self.back_right, self.back_left),
-            (self.back_left, self.front_left),
-            (self.front_left, self.front_right)
-        ]
-
-        for line in edge:
-            if self._check_checkpoint_intersection(line[0], line[1], checkpoint):
-                return True
-
-        return False
-
-    def _check_checkpoint_intersection(self, p1: Point, p2: Point, checkpoint: Checkpoint):
-        x1, y1 = checkpoint.x1, checkpoint.y1
-        x2, y2 = checkpoint.x2, checkpoint.y2
-        x3, y3 = p1.x, p1.y
-        x4, y4 = p2.x, p2.y
-
-        den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
-        if den == 0:
-            return False
-
-        t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / den
-        u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / den
-
-        return 0 <= t <= 1 and 0 <= u <= 1
+    def check_checkpoint_crossing(self, checkpoint: Checkpoint, behind: Point):
+        """True if the car's front point crossed `checkpoint` during the last
+        update(), from the side `behind` is on (the previous checkpoint) to
+        the other. Overlapping the line or crossing it the wrong way does not
+        count (issue #19)."""
+        return checkpoint.crossed_forward(self.prev_front, self.front, behind)
 
     @classmethod
     def _sprite(cls):
