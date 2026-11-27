@@ -9,8 +9,9 @@ on step 1 (issue #8); the margin is a safety net that keeps the spawn clearly
 behind checkpoint 0.
 
 "Forward" means from the previous checkpoint's side of the line to the other,
-so every checkpoint must have its previous and next checkpoints on opposite
-sides; `spawn_problems` checks that too.
+so a track needs at least 3 checkpoints and every checkpoint must have its
+previous and next checkpoints on opposite sides; `spawn_problems` checks that
+too.
 """
 import math
 
@@ -89,6 +90,11 @@ def spawn_problems(car, track):
     an empty list means the spawn is fine."""
     problems = []
     checkpoints = track.checkpoints
+    if len(checkpoints) < 3:
+        # With 2, a checkpoint's previous and next are the same one; with 1,
+        # its "behind" point lies on its own line. Neither has a forward side.
+        return [f"track has {len(checkpoints)} checkpoint(s); a forward "
+                f"crossing needs at least 3"]
 
     ahead = _first_checkpoint_on_ray(car, checkpoints, 1)
     if ahead != 0:

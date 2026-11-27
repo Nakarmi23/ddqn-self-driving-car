@@ -7,9 +7,11 @@ os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 import pygame  # noqa: E402
 
 from game.game_car import Car  # noqa: E402
-from game.game_checkpoint import Checkpoint  # noqa: E402
+from game.game_checkpoint import Checkpoint, count_passes  # noqa: E402
 from game.game_point import Point  # noqa: E402
+from game.game_spawn import spawn_problems  # noqa: E402
 from game.game_track import Track  # noqa: E402
+from game.game_wall import Wall  # noqa: E402
 from scripts.check_spawns import template_names  # noqa: E402
 
 
@@ -50,6 +52,85 @@ class CrossedForwardTest(unittest.TestCase):
 
     def test_crossing_at_an_endpoint_counts(self):
         self.assertTrue(self.crossed((5, 20), (15, 20)))
+
+
+class CountPassesTest(unittest.TestCase):
+    """count_passes: a fan of lines sharing the end (10, 0), like template1's
+    hairpins, swept clockwise from x < 10 round to y > 0."""
+
+    def setUp(self):
+        # Previous checkpoint far behind, then three lines through (10, 0).
+        self.cps = [Checkpoint(-50, -10, -50, 10),
+                    Checkpoint(10, 0, 10, -20),
+                    Checkpoint(10, 0, 30, -20),
+                    Checkpoint(10, 0, 30, 0)]
+
+    def passes(self, index, start, end):
+        return count_passes(self.cps, index, Point(*start), Point(*end))
+
+    def test_one_move_across_two_lines_counts_both(self):
+        # Crosses x = 10 and the diagonal, stops short of y = 0.
+        self.assertEqual(self.passes(1, (5, -10), (25, -2)), 2)
+
+    def test_counting_stops_at_the_first_line_not_crossed(self):
+        self.assertEqual(self.passes(1, (5, -10), (15, -12)), 1)
+        self.assertEqual(self.passes(1, (12, -18), (15, -12)), 0)
+
+    def test_landing_on_the_shared_end_counts_every_line_through_it(self):
+        # The front point stops exactly on (10, 0), which lies on lines 1-3.
+        self.assertEqual(self.passes(1, (5, -5), (10, 0)), 3)
+
+    def test_wraps_round_to_checkpoint_0(self):
+        # Moving left crosses the last checkpoint (x = -20), then cp0 (x = -40).
+        cps = [Checkpoint(-40, -10, -40, 10), Checkpoint(-100, 100, 100, 100),
+               Checkpoint(-20, -10, -20, 10)]
+        self.assertEqual(
+            count_passes(cps, 2, Point(-15, 0), Point(-45, 0)), 2)
+
+
+class ExtendToWallsTest(unittest.TestCase):
+    """A corridor between walls y = 0 and y = 100; the checkpoint at x = 50
+    stops 30 px short of the bottom wall."""
+
+    def setUp(self):
+        self.walls = [Wall(0, 0, 200, 0), Wall(0, 100, 200, 100)]
+        self.behind = Point(0, 50)
+
+    def test_gap_between_end_and_wall_is_closed(self):
+        cp = Checkpoint(50, 0, 50, 70)
+        self.assertFalse(cp.crossed_forward(Point(45, 85), Point(55, 85),
+                                            self.behind))
+        cp.extend_to_walls(self.walls)
+        self.assertEqual((cp.cross_x2, cp.cross_y2), (50, 100))
+        self.assertTrue(cp.crossed_forward(Point(45, 85), Point(55, 85),
+                                           self.behind))
+
+    def test_end_already_beyond_a_wall_is_left_alone(self):
+        # The top end pokes through y = 0; extending it would reach into
+        # whatever lies beyond that wall.
+        walls = self.walls + [Wall(0, -100, 200, -100)]
+        cp = Checkpoint(50, -20, 50, 100)
+        cp.extend_to_walls(walls)
+        self.assertEqual((cp.cross_x1, cp.cross_y1), (50, -20))
+
+    def test_drawn_line_is_unchanged(self):
+        cp = Checkpoint(50, 0, 50, 70)
+        cp.extend_to_walls(self.walls)
+        self.assertEqual((cp.x1, cp.y1, cp.x2, cp.y2), (50, 0, 50, 70))
+
+
+class MinimumCheckpointsTest(unittest.TestCase):
+    def test_fewer_than_three_checkpoints_is_rejected(self):
+        class FakeTrack:
+            walls = ()
+        for n in (1, 2):
+            with self.subTest(checkpoints=n):
+                track = FakeTrack()
+                track.checkpoints = [Checkpoint(i * 10, 0, i * 10, 10)
+                                     for i in range(n)]
+                problems = spawn_problems(None, track)
+                self.assertEqual(len(problems), 1)
+                self.assertIn("at least 3", problems[0])
 
 
 class TrackTemplateCrossingTest(unittest.TestCase):

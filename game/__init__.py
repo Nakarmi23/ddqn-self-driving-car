@@ -261,16 +261,18 @@ class Game:
 
             self.car.update()
 
-            current_checkpoint = self.checkpoints[self.current_checkpoint_index]
             # A pass is a forward crossing: from the previous checkpoint's
-            # side of the line to the other (issue #19).
-            has_passed = self.car.check_checkpoint_crossing(
-                current_checkpoint,
-                self.checkpoints[self.current_checkpoint_index - 1].center)
+            # side of the line to the other (issue #19). One step can cross
+            # several lines where checkpoints are close or share an end.
+            passes = self.car.count_checkpoint_passes(
+                self.checkpoints, self.current_checkpoint_index)
+            has_passed = passes > 0
             if has_passed:
-                checkpoints_passed += 1
+                checkpoints_passed += passes
                 self.steps_since_checkpoint = 0
-                self._handle_checkpoint_passed(current_checkpoint)
+                for _ in range(passes):
+                    self._handle_checkpoint_passed(
+                        self.checkpoints[self.current_checkpoint_index])
             else:
                 self.steps_since_checkpoint += 1
 
@@ -280,8 +282,7 @@ class Game:
 
             reward += progress_reward
 
-            if has_passed:
-                reward += self.CHECKPOINT_BONUS
+            reward += self.CHECKPOINT_BONUS * passes
 
             next_state = self._get_state()
             crashed = self.car.check_collisions(self.track.walls_grid)
