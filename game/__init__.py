@@ -2,7 +2,6 @@ from .game_track import Track
 from .game_car import Car
 from .game_spawn import spawn_problems
 from .game_eval import EvalResult, is_better, meets_lap_target, summarize
-from .game_point import Point
 import pygame
 import math
 import numpy as np
@@ -260,13 +259,14 @@ class Game:
             action = self.agent.choose_action(state, greedy=not training)
             self._apply_action(action)
 
-            self.car.prev_front_center = Point(
-                self.car.right_center.x, self.car.right_center.y)
             self.car.update()
 
             current_checkpoint = self.checkpoints[self.current_checkpoint_index]
-            has_passed = self.car.check_checkpoint_collision(
-                current_checkpoint)
+            # A pass is a forward crossing: from the previous checkpoint's
+            # side of the line to the other (issue #19).
+            has_passed = self.car.check_checkpoint_crossing(
+                current_checkpoint,
+                self.checkpoints[self.current_checkpoint_index - 1].center)
             if has_passed:
                 checkpoints_passed += 1
                 self.steps_since_checkpoint = 0

@@ -1,7 +1,7 @@
 """Check that every track template has a valid spawn (see game/game_spawn.py):
 between the last checkpoint and checkpoint 0, facing checkpoint 0, at least
-SPAWN_MARGIN px from every checkpoint and clear of walls. A spawn on a
-checkpoint counts the pass on step 1 without the car moving (issue #8).
+SPAWN_MARGIN px from every checkpoint and clear of walls, on a track whose
+checkpoints each have a clear forward direction (issues #8, #19).
 
     python -m scripts.check_spawns      # or: python scripts/check_spawns.py
 

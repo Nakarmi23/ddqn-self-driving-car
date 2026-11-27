@@ -3,9 +3,14 @@
 A spawn is valid when the car starts in the last lap segment, between the
 last checkpoint and checkpoint 0 (the start/finish line), facing checkpoint 0,
 with the hitbox at least `SPAWN_MARGIN` px from every checkpoint and touching
-no wall. A hitbox on a checkpoint counts the pass on step 1 without the car
-moving (issue #8), and a small margin lets any small change to the hitbox
-size or spawn bring that back.
+no wall. A pass is a forward crossing of the active checkpoint by the car's
+front point (issue #19), so a spawn on a checkpoint no longer gets a free pass
+on step 1 (issue #8); the margin is a safety net that keeps the spawn clearly
+behind checkpoint 0.
+
+"Forward" means from the previous checkpoint's side of the line to the other,
+so every checkpoint must have its previous and next checkpoints on opposite
+sides; `spawn_problems` checks that too.
 """
 import math
 
@@ -54,8 +59,7 @@ def _segment_distance(a, b, c, d):
 
 def hitbox_distance(car, x1, y1, x2, y2):
     """Shortest distance from the car's hitbox outline to segment (x1,y1)-(x2,y2);
-    0 if they touch. Unlike Car.check_checkpoint_collision this also catches a
-    segment lying along a hitbox edge."""
+    0 if they touch, including a segment lying along a hitbox edge."""
     corners = [(p.x, p.y) for p in (car.front_right, car.back_right,
                                     car.back_left, car.front_left)]
     edges = zip(corners, corners[1:] + corners[:1])
@@ -102,6 +106,15 @@ def spawn_problems(car, track):
         if dist < SPAWN_MARGIN:
             problems.append(f"hitbox is {dist:.1f} px from checkpoint {i} "
                             f"(need >= {SPAWN_MARGIN})")
+
+    for i, cp in enumerate(checkpoints):
+        prev = checkpoints[i - 1].center
+        nxt = checkpoints[(i + 1) % len(checkpoints)].center
+        if cp.side_of(prev.x, prev.y) * cp.side_of(nxt.x, nxt.y) >= 0:
+            problems.append(
+                f"checkpoints {i - 1 if i else len(checkpoints) - 1} and "
+                f"{(i + 1) % len(checkpoints)} are not on opposite sides of "
+                f"checkpoint {i}: its forward direction is ambiguous")
 
     if any(hitbox_distance(car, w.x1, w.y1, w.x2, w.y2) == 0
            for w in track.walls):
