@@ -320,12 +320,20 @@ class Car:
 
     @classmethod
     def _sprite(cls):
-        """Car image, loaded from disk once and shared by every Car."""
+        """Car image, loaded from disk once per pygame session and shared by
+        every Car. The cache is dropped on the next pygame.quit() (quit hooks
+        run once, so each load registers its own), so a restarted pygame
+        loads a fresh Surface instead of reusing one from before (#22)."""
         if cls._original_image is None:
             image = pygame.image.load(
                 os.path.join(os.path.dirname(__file__), "assets", "car.png"))
             cls._original_image = pygame.transform.flip(image, True, False)
+            pygame.register_quit(cls._drop_sprite)
         return cls._original_image
+
+    @classmethod
+    def _drop_sprite(cls):
+        cls._original_image = None
 
     def draw(self, surface):
         # Draw car, rotated here rather than in update() so steps that are
