@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -38,7 +40,7 @@ class DDQNAgent:
     LOG_EVERY = 1000  # learning steps between stdout progress lines
 
     def __init__(self, state_size, action_size, epsilon_decay_steps=400_000,
-                 beta_anneal_steps=1_000_000):
+                 beta_anneal_steps=1_000_000, log_dir="logs"):
         self.state_size = state_size
         self.action_size = action_size
         self.priority_alpha = 0.6
@@ -79,7 +81,7 @@ class DDQNAgent:
         # One row per learning step, so buffer writes instead of flushing
         # every row.
         self.training_log = CsvLogger(
-            "logs/training_metrics.csv", ["step", "loss", "avg_td_error"],
+            os.path.join(log_dir, "training_metrics.csv"), ["step", "loss", "avg_td_error"],
             flush_every=1000)
 
         self._update_target_network(hard_copy=True)

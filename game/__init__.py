@@ -2,6 +2,7 @@ from .game_track import Track
 from .game_car import Car
 from .game_spawn import spawn_problems
 from .game_eval import EvalResult, is_better, meets_lap_target, summarize
+from . import game_run
 import pygame
 import math
 import numpy as np
@@ -37,6 +38,20 @@ def _env_positive_int(name, default):
     return number
 
 
+def _env_nonnegative_int(name):
+    """Optional non-negative integer env var: None when unset or empty."""
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return None
+    try:
+        number = int(value)
+    except ValueError:
+        number = -1
+    if number < 0:
+        raise SystemExit(f"{name}={os.environ[name]!r}: expected a non-negative integer")
+    return number
+
+
 class Game:
     # Reward scale, see docs/adr/0001-progress-led-reward.md.
     CRASH_PENALTY_BASE = 50
@@ -50,6 +65,9 @@ class Game:
     # way out once stuck.
     TIME_COST = ALIGNMENT_WEIGHT * 0.5
     SAVE_EVERY = 10
+    # Paths relative to the run directory (RUN_DIR), or to the working
+    # directory when no run directory is given.
+    LOG_DIR = "logs"
     MAX_STEPS_PER_EPISODE = 3000
     STALL_LIMIT = 1000  # steps without passing a checkpoint before giving up
     CHECKPOINT_LATEST_PATH = "models/checkpoint_latest.pt"
@@ -91,6 +109,32 @@ class Game:
                           else self.FPS_CAP)
         self.total_steps = 0  # environment steps this process, for render_every
 
+        # Run identity (issue #27), from env vars:
+        # - SEED=N fixes every source of randomness (game_run.seed_everything).
+        # - RUN_DIR=path keeps this run's logs, models and manifest.json in
+        #   that directory. Pointing at it again resumes the run; SEED and
+        #   TRACK_TEMPLATE then default to the manifest's and must match it.
+        # Without RUN_DIR, logs/ and models/ in the working directory are used.
+        self.run_dir = os.environ.get("RUN_DIR", "").strip() or None
+        manifest = (game_run.read_manifest(self.run_dir)
+                    if self.run_dir else None)
+        self.seed = _env_nonnegative_int("SEED")
+        self.track_name = os.environ.get("TRACK_TEMPLATE")
+        if manifest is not None:
+            self.seed = self._matching_manifest_value(
+                manifest, "seed", "SEED", self.seed)
+            self.track_name = self._matching_manifest_value(
+                manifest, "track", "TRACK_TEMPLATE", self.track_name)
+        if self.track_name is None:
+            self.track_name = "template5"
+        if self.seed is not None:
+            # Before anything random: the networks' initial weights included.
+            game_run.seed_everything(self.seed)
+        self.checkpoint_latest_path = self._path(self.CHECKPOINT_LATEST_PATH)
+        self.checkpoint_history_dir = self._path(self.CHECKPOINT_HISTORY_DIR)
+        self.best_model_path = self._path(self.BEST_MODEL_PATH)
+        log_dir = self._path(self.LOG_DIR)
+
         pygame.init()
         self.width, self.height = 1000, 600
         self.surface = pygame.display.set_mode((self.width, self.height))
@@ -101,30 +145,72 @@ class Game:
         self.top_rewards = [0]
         self.recent_rewards = [0]
 
-        self.track_name = os.environ.get("TRACK_TEMPLATE", "template5")
         self.track = Track(self.surface, self.track_name)
         self._reset_game_state()
         self._check_spawn()
         self.agent = DDQNAgent(
             len(self.car.get_state()) + 2, 9,
             epsilon_decay_steps=int(self.TOTAL_TRAIN_STEPS * self.EPSILON_DECAY_FRACTION),
-            beta_anneal_steps=self.TOTAL_TRAIN_STEPS)
+            beta_anneal_steps=self.TOTAL_TRAIN_STEPS, log_dir=log_dir)
 
-        # Create directory if it doesn't exist
-        os.makedirs("logs", exist_ok=True)
-        os.makedirs("models", exist_ok=True)
-        os.makedirs(self.CHECKPOINT_HISTORY_DIR, exist_ok=True)
+        os.makedirs(log_dir, exist_ok=True)
+        os.makedirs(os.path.dirname(self.checkpoint_latest_path), exist_ok=True)
+        os.makedirs(self.checkpoint_history_dir, exist_ok=True)
 
         self.episode_log = CsvLogger(
-            "logs/episode_rewards.csv", ["episode", "reward", "steps", "epsilon"])
-        self.q_value_log = CsvLogger("logs/q_value_metrics.csv", [
+            os.path.join(log_dir, "episode_rewards.csv"),
+            ["episode", "reward", "steps", "epsilon"])
+        self.q_value_log = CsvLogger(os.path.join(log_dir, "q_value_metrics.csv"), [
             "episode", "mean_online_q", "std_online_q", "mean_delta_q", "max_delta_q"])
-        self.eval_log = CsvLogger("logs/eval_metrics.csv", [
+        self.eval_log = CsvLogger(os.path.join(log_dir, "eval_metrics.csv"), [
             "episode", "step", "mean_reward", "mean_checkpoints",
             "min_checkpoints", "mean_laps", "min_laps", "new_best"])
 
         self.load_model()
         self.best_eval = self._load_best_eval()
+
+    def _path(self, relative):
+        """`relative` inside the run directory, or as is without one."""
+        return os.path.join(self.run_dir, relative) if self.run_dir else relative
+
+    def _matching_manifest_value(self, manifest, key, env_name, value):
+        """The manifest's `key` when the env var is unset, else `value`,
+        which must equal it: a run directory belongs to one run."""
+        if value is None:
+            return manifest[key]
+        if value != manifest[key]:
+            raise SystemExit(
+                f"{env_name}={value!r} does not match {key}={manifest[key]!r} "
+                f"in {game_run.manifest_path(self.run_dir)}")
+        return value
+
+    def _start_manifest(self):
+        """Write the manifest when the run starts, or check a resumed run
+        against it. No-op without a run directory."""
+        if not self.run_dir:
+            return
+        manifest = game_run.read_manifest(self.run_dir)
+        if manifest is None:
+            game_run.write_manifest(self.run_dir, game_run.new_manifest(
+                self.seed, self.TOTAL_TRAIN_STEPS, self.track_name))
+        elif manifest["budget"] != self.TOTAL_TRAIN_STEPS:
+            raise SystemExit(
+                f"Training budget {self.TOTAL_TRAIN_STEPS} does not match "
+                f"budget={manifest['budget']} in "
+                f"{game_run.manifest_path(self.run_dir)}")
+
+    def _finish_manifest(self, stop_reason):
+        if not self.run_dir:
+            return
+        manifest = game_run.read_manifest(self.run_dir)
+        game_run.write_manifest(
+            self.run_dir, game_run.mark_finished(manifest, stop_reason))
+
+    def _run_finished(self):
+        if not self.run_dir:
+            return True  # nothing to record without a manifest
+        manifest = game_run.read_manifest(self.run_dir)
+        return manifest["status"] == game_run.STATUS_FINISHED
 
     def _should_render(self):
         return not self.headless and self.total_steps % self.render_every == 0
@@ -139,12 +225,24 @@ class Game:
     def run(self):
         """Train until the step budget is spent, an evaluation meets the
         early-stop bar, or the window is closed / Ctrl+C is pressed. Every
-        way out saves the same checkpoint."""
+        way out saves the same checkpoint. With a run directory, the manifest
+        is written at the start and marked finished at the budget or the
+        early stop; an interrupted run stays "running"."""
+        self._start_manifest()
         if self._budget_spent():
             # A resumed run that already spent its budget: nothing to train,
-            # and its final policy was scored when the budget ran out.
-            print(f"Training budget of {self.TOTAL_TRAIN_STEPS} learning "
-                  f"steps already spent, nothing to do.")
+            # and its final policy was scored when the budget ran out. Unless
+            # it was interrupted during that final round, before its manifest
+            # said finished: then score it now, so it can be finished.
+            if self._run_finished():
+                print(f"Training budget of {self.TOTAL_TRAIN_STEPS} learning "
+                      f"steps already spent, nothing to do.")
+            else:
+                try:
+                    if self.evaluate() is not None:
+                        self._finish_manifest("budget")
+                except KeyboardInterrupt:
+                    print("\nInterrupted.")
             self.close()
             return
 
@@ -171,13 +269,15 @@ class Game:
                             and meets_lap_target(result, self.EARLY_STOP_LAPS)):
                         print(f"Every evaluation episode completed "
                               f"{self.EARLY_STOP_LAPS}+ laps, stopping.")
+                        self._finish_manifest("early_stop")
                         break
             else:
                 print(f"Training budget of {self.TOTAL_TRAIN_STEPS} "
                       f"learning steps reached, stopping.")
                 # Score the final policy too, so the episodes since the last
                 # scheduled round can still produce best.pt.
-                self.evaluate()
+                if self.evaluate() is not None:
+                    self._finish_manifest("budget")
         except KeyboardInterrupt:
             # Ctrl+C (how headless runs are stopped) is handled like closing
             # the window. save_model writes atomically, so an interrupt that
@@ -544,7 +644,7 @@ class Game:
         run_state = self._run_state()
         checkpoint = self.agent.export_state()
         checkpoint.update(run_state)
-        self._atomic_torch_save(checkpoint, self.CHECKPOINT_LATEST_PATH)
+        self._atomic_torch_save(checkpoint, self.checkpoint_latest_path)
         # Keep the CSV logs on disk in step with the checkpoint.
         for log in self._logs():
             log.flush()
@@ -556,23 +656,27 @@ class Game:
             history = self.agent.export_state(include_buffer=False)
             history.update(run_state)
             history_path = os.path.join(
-                self.CHECKPOINT_HISTORY_DIR, f"checkpoint_ep{self.episode - 1:06d}.pt")
+                self.checkpoint_history_dir, f"checkpoint_ep{self.episode - 1:06d}.pt")
             self._atomic_torch_save(history, history_path)
             self._prune_history()
 
     def _prune_history(self):
         checkpoints = sorted(glob.glob(os.path.join(
-            self.CHECKPOINT_HISTORY_DIR, "checkpoint_ep*.pt")))
+            self.checkpoint_history_dir, "checkpoint_ep*.pt")))
         for stale_checkpoint in checkpoints[:-self.KEEP_HISTORY_COUNT]:
             os.remove(stale_checkpoint)
 
     def _run_state(self):
-        """Run counters saved alongside the agent state in every checkpoint."""
-        return {
+        """Run counters saved alongside the agent state in every checkpoint,
+        plus the random generators' state in a seeded run."""
+        state = {
             "next_episode": self.episode,
             "top_rewards": self.top_rewards,
             "recent_rewards": self.recent_rewards,
         }
+        if self.seed is not None:
+            state["rng_state"] = game_run.rng_state()
+        return state
 
     def _save_best(self, result):
         """Write the current weights to BEST_MODEL_PATH with the evaluation
@@ -587,18 +691,18 @@ class Game:
             "num_checkpoints": len(self.checkpoints),
             "eval": dataclasses.asdict(result),
         })
-        self._atomic_torch_save(best, self.BEST_MODEL_PATH)
+        self._atomic_torch_save(best, self.best_model_path)
 
     def _load_best_eval(self):
         """The EvalResult saved in BEST_MODEL_PATH, so a restarted run only
         replaces it with a better one. None if there is no best yet, it was
         earned on another track or checkpoint layout (checkpoint counts
         don't compare), or the file can't be read as one."""
-        if not os.path.exists(self.BEST_MODEL_PATH):
+        if not os.path.exists(self.best_model_path):
             return None
         # weights_only=False for the same reason as load_model: a trusted
         # file written locally by _save_best.
-        best = torch.load(self.BEST_MODEL_PATH, map_location=self.agent.device,
+        best = torch.load(self.best_model_path, map_location=self.agent.device,
                           weights_only=False)
         if (best.get("track") != self.track_name
                 or best.get("num_checkpoints") != len(self.checkpoints)):
@@ -608,19 +712,19 @@ class Game:
         except (KeyError, TypeError) as error:
             # Written before EvalResult gained or lost a field: treat it as
             # no best yet rather than refusing to start.
-            print(f"Ignoring the evaluation in {self.BEST_MODEL_PATH} "
+            print(f"Ignoring the evaluation in {self.best_model_path} "
                   f"({error!r}); the next round becomes the best.")
             return None
 
     def load_model(self):
-        if not os.path.exists(self.CHECKPOINT_LATEST_PATH):
+        if not os.path.exists(self.checkpoint_latest_path):
             return
 
         # weights_only=False: the checkpoint bundles the replay memory (numpy
         # arrays/scalars), which PyTorch >= 2.6's safe unpickler rejects. This
         # file is only ever written by save_model() locally, so it's trusted.
         checkpoint = torch.load(
-            self.CHECKPOINT_LATEST_PATH, map_location=self.agent.device,
+            self.checkpoint_latest_path, map_location=self.agent.device,
             weights_only=False)
         self.agent.import_state(checkpoint)
         if "next_episode" in checkpoint:
@@ -630,6 +734,9 @@ class Game:
             self.episode = checkpoint["episode"] + 1
         self.top_rewards = checkpoint["top_rewards"]
         self.recent_rewards = checkpoint["recent_rewards"]
+        if self.seed is not None and "rng_state" in checkpoint:
+            # Continue the random streams where the checkpoint left them.
+            game_run.set_rng_state(checkpoint["rng_state"])
 
     def _draw_text(self, text, pos, size, color=(255, 255, 255)):
         font = pygame.font.Font(None, size)
